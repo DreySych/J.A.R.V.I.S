@@ -1,65 +1,85 @@
-from flask import Flask, request, jsonify
-import requests
+from flask import Flask, request, jsonify, send_file
+from pathlib import Path
+import json
 
 app = Flask(__name__)
 
-# Реестр Speaker Node
-speaker_nodes = []
+AUDIO_DIR = Path(__file__).resolve().parent / "audio"
+AUDIO_DIR.mkdir(exist_ok=True)
+REGISTRY_PATH = Path(__file__).parent / "modules_registry.json"
 
 
-# ==================== API ДЛЯ МОДУЛЕЙ ====================
+@app.route("/api/speak_audio", methods=["POST"])
+def speak_audio():
+    data = request.get_json(silent=True) or {}
+    filename = data.get("file_name", "")
+    path = AUDIO_DIR / filename
 
-@app.route('/api/module/register', methods=['POST'])
-def register_module():
-    """Регистрация модуля"""
-    data = request.json
-    module_id = data.get('module_id')
-    module_type = data.get('module_type')
+    if not path.exists():
+        return jsonify({"success": False, "error": "File not found"}), 404
 
-    if module_type == 'speaker':
-        speaker_nodes.append(module_id)
-        print(f"Зарегистрирован Speaker Node: {module_id}")
-
-    return jsonify({
-        "success": True,
-        "message": f"Module {module_id} registered"
-    })
+    url = f"http://{request.host}/audio/{filename}"
+    return jsonify({"success": True, "url": url})
 
 
-@app.route('/api/audio', methods=['POST'])
-def receive_audio():
-    """Получает аудио от Speaker Node"""
-
-    # Сохраняем аудио
-    audio_file = request.files['audio']
-    audio_data = audio_file.read()
-
-    # Сохраняем в файл для проверки
-    with open('recordings/test_audio.wav', 'wb') as f:
-        f.write(audio_data)
-
-    print(f"Получено аудио: {len(audio_data)} байт")
-
-    # Возвращаем тестовый ответ
-    return jsonify({
-        "success": True,
-        "text": "тестовая команда",
-        "response": "Привет! Я получил твоё аудио."
-    })
+@app.route("/audio/<filename>", methods=["GET"])
+def get_audio(filename):
+    path = AUDIO_DIR / filename
+    if not path.exists():
+        return "Not found", 404
+    return send_file(path, mimetype="audio/wav")
 
 
-# ==================== ТЕСТИРОВАНИЕ ====================
-
-@app.route('/api/test', methods=['GET'])
+@app.route("/api/test", methods=["GET"])
 def test_endpoint():
-    """Тестовый endpoint"""
     return jsonify({
         "status": "ok",
-        "message": "Мозг работает!",
-        "speaker_nodes": speaker_nodes
+        "message": "Мозг работает!"
     })
 
 
-if __name__ == '__main__':
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    data = request.get_json(silent=True) or {}
+    user_text = data.get("text", "")
+
+    response_text = "Это тестовый ответ от мозга."
+
+    return jsonify({
+        "success": True,
+        "response": response_text,
+        "request_text": user_text,
+    })
+
+
+@app.route("/api/modules", methods=["POST"])
+def add_module():
+    data = request.get_json(silent=True) or {}
+
+    required = ["module_id", "module_type", "status", "tools"]
+    if not all(k in data for k in required):
+        return jsonify({
+            "success": False,
+            "error": "Missing required fields: module_id, module_type, status, tools"
+        }), 400
+
+    with REGISTRY_PATH.open("r", encoding="utf-8") as f:
+        registry = json.load(f)
+
+    if any(m["module_id"] == data["module_id"] for m in registry):
+        return jsonify({
+            "success": False,
+            "error": f"Module {data['module_id']} already exists"
+        }), 409
+
+    registry.append(data)
+
+    with REGISTRY_PATH.open("w", encoding="utf-8") as f:
+        json.dump(registry, f, ensure_ascii=False, indent=2)
+
+    return jsonify({"success": True})
+
+
+if __name__ == "__main__":
     print("Запуск тестового мозга...")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)

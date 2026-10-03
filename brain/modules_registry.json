@@ -1,0 +1,19 @@
+[
+  {
+    "module_id": "light-01",
+    "module_type": "light",
+    "status": "online",
+    "endpoint": "http://10.177.33.150:8080",
+    "tools": [
+      {
+        "name": "set_color",
+        "description": "Устанавливает цвет света",
+        "parameters": {
+          "r": "int",
+          "g": "int",
+          "b": "int"
+        }
+      }
+    ]
+  }
+]

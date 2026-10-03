@@ -10,3 +10,9 @@ requests==2.31.0
 
 # Обработка данных
 pydantic==2.5.2
+
+# Агент
+langchain
+YandexGPT
+langchain_yandex
+python-dotenv
