@@ -13,11 +13,9 @@ pydantic==2.5.2
 
 # Агент
 langchain
-YandexGPT
-langchain_yandex
 python-dotenv
 
-# Текст в речь
+# Другое
 numpy
 omegaconf
 soundfile
