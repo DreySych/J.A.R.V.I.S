@@ -1,25 +1,24 @@
 from flask import Flask, request, jsonify, send_file
 from pathlib import Path
+from voice_load import synthesize_wav
 import json
 
 app = Flask(__name__)
 
 AUDIO_DIR = Path(__file__).resolve().parent / "audio"
 AUDIO_DIR.mkdir(exist_ok=True)
+
 REGISTRY_PATH = Path(__file__).parent / "modules_registry.json"
 
+RESPONSE_PATH = Path(__file__).parent / "audio" / "response.wav"
 
-@app.route("/api/speak_audio", methods=["POST"])
-def speak_audio():
-    data = request.get_json(silent=True) or {}
-    filename = data.get("file_name", "")
-    path = AUDIO_DIR / filename
 
-    if not path.exists():
-        return jsonify({"success": False, "error": "File not found"}), 404
-
-    url = f"http://{request.host}/audio/{filename}"
-    return jsonify({"success": True, "url": url})
+@app.route("/api/test", methods=["GET"])
+def test_endpoint():
+    return jsonify({
+        "status": "ok",
+        "message": "J.A.R.V.I.S. is ready for work"
+    })
 
 
 @app.route("/audio/<filename>", methods=["GET"])
@@ -30,26 +29,19 @@ def get_audio(filename):
     return send_file(path, mimetype="audio/wav")
 
 
-@app.route("/api/test", methods=["GET"])
-def test_endpoint():
-    return jsonify({
-        "status": "ok",
-        "message": "Мозг работает!"
-    })
-
-
 @app.route("/api/chat", methods=["POST"])
 def chat():
     data = request.get_json(silent=True) or {}
     user_text = data.get("text", "")
 
-    response_text = "Это тестовый ответ от мозга."
+    response_text = "Я Джарвис. Чем могу помочь?"
 
-    return jsonify({
-        "success": True,
-        "response": response_text,
-        "request_text": user_text,
-    })
+    synthesize_wav(response_text, str(RESPONSE_PATH))
+
+    return send_file(
+        RESPONSE_PATH,
+        mimetype="audio/wav",
+    )
 
 
 @app.route("/api/modules", methods=["POST"])
@@ -60,7 +52,7 @@ def add_module():
     if not all(k in data for k in required):
         return jsonify({
             "success": False,
-            "error": "Missing required fields: module_id, module_type, status, tools"
+            "error": "Invalid module"
         }), 400
 
     with REGISTRY_PATH.open("r", encoding="utf-8") as f:
@@ -81,5 +73,5 @@ def add_module():
 
 
 if __name__ == "__main__":
-    print("Запуск тестового мозга...")
+    print("Initializing J.A.R.V.I.S. systems...")
     app.run(host="0.0.0.0", port=5000, debug=True)

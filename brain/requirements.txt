@@ -16,3 +16,9 @@ langchain
 YandexGPT
 langchain_yandex
 python-dotenv
+
+# Текст в речь
+numpy
+omegaconf
+soundfile
+scipy
