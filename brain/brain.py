@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_file
 from pathlib import Path
 from voice_load import synthesize_wav
+from jarvis_agent import ask_jarvis
 import json
 
 app = Flask(__name__)
@@ -34,14 +35,29 @@ def chat():
     data = request.get_json(silent=True) or {}
     user_text = data.get("text", "")
 
-    response_text = "Я Джарвис. Чем могу помочь?"
+    if not user_text.strip():
+        return jsonify({
+            "success": False,
+            "error": "Empty request"
+        }), 400
 
-    synthesize_wav(response_text, str(RESPONSE_PATH))
+    try:
+        response_text = ask_jarvis(user_text)
 
-    return send_file(
-        RESPONSE_PATH,
-        mimetype="audio/wav",
-    )
+        synthesize_wav(response_text, str(RESPONSE_PATH))
+
+        return send_file(
+            RESPONSE_PATH,
+            mimetype="audio/wav",
+        )
+
+    except Exception as error:
+        print(f"Ошибка J.A.R.V.I.S.: {error}")
+
+        return jsonify({
+            "success": False,
+            "error": "Something went wrong"
+        }), 500
 
 
 @app.route("/api/modules", methods=["POST"])
