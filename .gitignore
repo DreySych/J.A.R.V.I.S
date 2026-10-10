@@ -1,3 +1,6 @@
 *.wav
 *.jpg
 *.env
+models/
+__pycache__/
+*.pyc

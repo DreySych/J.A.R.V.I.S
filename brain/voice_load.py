@@ -13,7 +13,7 @@ tts_model, example_text = torch.hub.load(
 tts_model.to(device)
 
 
-def synthesize_wav(text, out_path):
+def synthesize_wav_silero(text, out_path):
     audio = tts_model.apply_tts(
         text=text,
         speaker="eugene",

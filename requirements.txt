@@ -25,6 +25,7 @@ scipy
 # Синтез речи
 torch
 torchaudio
+piper-tts
 
 # Нормализация текста для озвучки
 ru-normalizr
