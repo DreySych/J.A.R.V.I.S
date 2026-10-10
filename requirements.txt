@@ -1,23 +1,30 @@
-# Web сервер
+# Веб-сервер
 flask==3.0.0
 werkzeug==3.0.1
 
 # Распознавание речи
 vosk==0.3.45
 
-# HTTP запросы
+# HTTP-запросы
 requests==2.31.0
 
-# Обработка данных
+# Обработка и проверка данных
 pydantic==2.5.2
 
-# Агент
+# ИИ-агент
 langchain
 openai
 python-dotenv
 
-# Другое
+# Обработка аудио и данных
 numpy
 omegaconf
 soundfile
 scipy
+
+# Синтез речи
+torch
+torchaudio
+
+# Нормализация текста для озвучки
+ru-normalizr

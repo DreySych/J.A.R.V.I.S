@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, send_file
 from pathlib import Path
 from voice_load import synthesize_wav
 from jarvis_agent import ask_jarvis
+from digit_normalize import normalize_for_tts
 import json
 
 app = Flask(__name__)
@@ -43,8 +44,9 @@ def chat():
 
     try:
         response_text = ask_jarvis(user_text)
+        normalized_text = normalize_for_tts(response_text)
 
-        synthesize_wav(response_text, str(RESPONSE_PATH))
+        synthesize_wav(normalized_text, str(RESPONSE_PATH))
 
         return send_file(
             RESPONSE_PATH,
