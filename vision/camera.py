@@ -1,41 +1,34 @@
 from pathlib import Path
 from datetime import datetime
+from time import sleep
 import sqlite3
-import threading
 
-import cv2
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response
+from flask import Flask, request, jsonify, send_file
+from picamera2 import Picamera2
+from picamera2.encoders import H264Encoder
+from picamera2.outputs import FfmpegOutput
+from libcamera import Transform
 
 
-app = Flask(__name__) #приложение
-
-#создание путей для папок
+# Сервер и папки с файлами рядом с camera.py.
+app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
-MEDIA_DIR = BASE_DIR / "media"
-PHOTO_DIR = MEDIA_DIR / "camera_photos"
-VIDEO_DIR = MEDIA_DIR / "camera_videos"
-BOARD_DIR = MEDIA_DIR / "board_photos"
+PHOTO_DIR = BASE_DIR / "media" / "photos"
+VIDEO_DIR = BASE_DIR / "media" / "videos"
 DATABASE_PATH = BASE_DIR / "database.db"
 
-
-#создаем сами папки если их нет
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
-BOARD_DIR.mkdir(parents=True, exist_ok=True)
 
-
-#обьявляем глобальные переменные с сотоянием стрима , видео и тд
-stream_active = False
+# Камеру используем по очереди для фото и видео.
+camera = Picamera2()
 video_recording = False
-video_thread = None
-current_video_name = None
-last_video_info = None
+current_video_path = None
 
 
 def init_db():
-    #открываем базу данных и создаём таблицу для сведений о файлах
+    # В базе храним сведения о файлах, а сами файлы — в папках.
     connection = sqlite3.connect(DATABASE_PATH)
-
     connection.execute("""
         CREATE TABLE IF NOT EXISTS media (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,315 +38,319 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
-
-    # Подтверждаем изменения и закрываем соединение с базой.
+    # Счётчики сохраняются при перезапуске и не сбрасываются при удалении.
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS name_counters (
+            type TEXT PRIMARY KEY,
+            last_number INTEGER NOT NULL
+        )
+    """)
     connection.commit()
     connection.close()
+
+
+def get_auto_name(media_type):
+    # Создаём photo1, photo2... или video1, video2... без скобок.
+    connection = sqlite3.connect(DATABASE_PATH)
+    cursor = connection.execute(
+        "SELECT last_number FROM name_counters WHERE type = ?",
+        (media_type,)
+    )
+    row = cursor.fetchone()
+    number = 0
+    if row is not None:
+        number = row[0]
+
+    # Пропускаем имена, которые пользователь уже занял вручную.
+    while True:
+        number += 1
+        name = media_type + str(number)
+        cursor = connection.execute(
+            "SELECT id FROM media WHERE name = ? AND type = ?",
+            (name, media_type)
+        )
+        if cursor.fetchone() is None:
+            break
+
+    connection.execute(
+        "INSERT OR REPLACE INTO name_counters (type, last_number) VALUES (?, ?)",
+        (media_type, number)
+    )
+    connection.commit()
+    connection.close()
+    return name
 
 
 def save_media_to_db(name, media_type, path):
-    # добавляем в базу название, тип, путь к файлу и текущее время.
+    # Добавляем сведения о завершённом снимке или видео.
     connection = sqlite3.connect(DATABASE_PATH)
-
-    cursor = connection.execute(
+    connection.execute(
         "INSERT INTO media (name, type, path, created_at) VALUES (?, ?, ?, ?)",
-        (name, media_type, path, datetime.now().isoformat())
+        (name, media_type, str(path), datetime.now().isoformat())
     )
-
-    # получаем номер новой записи, сохраняем её и возвращаем номер.
-    media_id = cursor.lastrowid
     connection.commit()
     connection.close()
 
-    return media_id
+
+def find_media(name, media_type):
+    # Если в старой базе есть дубликаты, выбираем последний.
+    connection = sqlite3.connect(DATABASE_PATH)
+    cursor = connection.execute(
+        """
+        SELECT id, name, type, path FROM media
+        WHERE name = ? AND type = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (name, media_type)
+    )
+    row = cursor.fetchone()
+    connection.close()
+    return row
 
 
-def capture_frame():
-    #открываем первую камеру, получаем один кадр и освобождаем камеру.
-    camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-    success, frame = camera.read()
-    camera.release()
+def find_last_media(media_type):
+    # Находим последний добавленный файл выбранного типа.
+    connection = sqlite3.connect(DATABASE_PATH)
+    cursor = connection.execute(
+        """
+        SELECT id, name, type, path FROM media
+        WHERE type = ?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (media_type,)
+    )
+    row = cursor.fetchone()
+    connection.close()
+    return row
 
-    #если получить кадр не удалось, возвращаем отсутствие результата.
-    if not success:
-        return None
 
-    return cv2.flip(frame, 1)
+def delete_media_record(row):
+    # row содержит: id, name, type, path.
+    # Сначала удаляем файл. При ошибке запись в базе останется.
+    file_path = Path(row[3])
+    try:
+        file_path.unlink(missing_ok=True)
+    except OSError:
+        return jsonify(result="error", message="Не удалось удалить файл"), 500
+
+    # Если файла уже не было, тоже удаляем оставшуюся запись.
+    connection = sqlite3.connect(DATABASE_PATH)
+    connection.execute("DELETE FROM media WHERE id = ?", (row[0],))
+    connection.commit()
+    connection.close()
+    return jsonify(result="success")
 
 
 @app.route("/capture_photo/", methods=["POST"])
 def capture_photo():
-    #получаем JSON из запроса и делаем снимок камерой.
-    data = request.get_json()
-    frame = capture_frame()
+    # Не фотографируем во время записи видео.
+    if video_recording:
+        return jsonify(result="error", message="Идёт запись видео"), 409
 
-    #если камера не выдала кадр, возвращаем ошибку.
-    if frame is None:
-        return jsonify(result="error"), 500
+    # Можно отправить JSON с name, пустой объект или запрос без body.
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify(result="error", message="Body должен быть JSON-объектом"), 400
+    name = data.get("name")
+    if name is not None and not isinstance(name, str):
+        return jsonify(result="error", message="name должен быть строкой"), 400
+    if name is not None:
+        name = name.strip()
+    if not name:
+        name = get_auto_name("photo")
 
-    #создаём имя по дате и времени, затем сохраняем кадр как JPEG.
+    # Два фото с одинаковым названием сохранять нельзя.
+    if find_media(name, "photo") is not None:
+        return jsonify(result="error", message="Название фото уже занято"), 409
+
     filename = datetime.now().strftime("photo_%Y%m%d_%H%M%S_%f.jpg")
-    file_path = PHOTO_DIR / filename
-    cv2.imwrite(str(file_path), frame)
+    photo_path = PHOTO_DIR / filename
 
-    #сохраняем сведения о фотографии в базе данных.
-    save_media_to_db(
-        data.get("name"),
-        "camera_photo",
-        "camera_photos/" + filename
-    )
-
-    #отправляем клиенту сохранённое изображение.
-    return send_file(file_path, mimetype="image/jpeg")
-
-
-def generate_stream():
-    #используем глобальную переменную состояния и открываем камеру.
-    global stream_active
-    camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-
-    # получаем кадры и по одному отправляем их клиенту,
-    # пока трансляция включена.
+    # Включаем зеркальное отражение для самого сохранённого снимка.
+    config = camera.create_still_configuration(transform=Transform(hflip=True))
+    camera.configure(config)
+    camera.start()
     try:
-        while stream_active:
-            #получаем очередной кадр. При неудаче заканчиваем цикл.
-            success, frame = camera.read()
-
-            if not success:
-                break
-
-            #отражаем кадр и преобразуем его в JPEG в памяти.
-            frame = cv2.flip(frame, 1)
-            success, jpeg = cv2.imencode(".jpg", frame)
-
-            #если преобразование не удалось, переходим к следующему кадру.
-            if not success:
-                continue
-
-            #отдаём один JPEG-кадр с разделителем и HTTP-заголовком.
-            #yield позволяет затем продолжить и отдать следующий кадр.
-            yield (
-                b"--frame\r\n"
-                b"Content-Type: image/jpeg\r\n\r\n"
-                + jpeg.tobytes()
-                + b"\r\n"
-            )
-
-    # При завершении трансляции освобождаем камеру и сбрасываем состояние.
+        sleep(2)
+        camera.capture_file(str(photo_path))
     finally:
-        camera.release()
-        stream_active = False
+        camera.stop()
 
-
-@app.route("/stream_camera/", methods=["GET"])
-def stream_camera():
-    # Включаем трансляцию.
-    global stream_active
-    stream_active = True
-
-    # Возвращаем HTTP-ответ, в который постепенно поступают JPEG-кадры.
-    return Response(
-        generate_stream(),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
-
-
-@app.route("/stop_stream/", methods=["POST"])
-def stop_stream():
-    # Даём циклу трансляции команду завершиться.
-    global stream_active
-    stream_active = False
-
-    # Сообщаем клиенту, что команда остановки принята.
-    return jsonify(result="success", status="stopped")
-
-
-@app.route("/stream_status/", methods=["GET"])
-def stream_status():
-    # Определяем состояние трансляции по общей переменной.
-    status = "stopped"
-
-    if stream_active:
-        status = "streaming"
-
-    # Возвращаем состояние в формате JSON.
-    return jsonify(status=status)
-
-
-def record_video(video_name):
-    # Используем общие переменные и открываем камеру.
-    global video_recording, last_video_info
-    camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-
-    # Получаем размер кадра и частоту кадров камеры.
-    width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = camera.get(cv2.CAP_PROP_FPS)
-
-    # Если камера не сообщила положительный FPS, используем 20.
-    if fps <= 0:
-        fps = 20
-
-    # Создаём имя файла и объект, который будет записывать видео.
-    filename = datetime.now().strftime("video_%Y%m%d_%H%M%S_%f.mp4")
-    file_path = VIDEO_DIR / filename
-    codec = cv2.VideoWriter_fourcc("m", "p", "4", "v")
-    writer = cv2.VideoWriter(str(file_path), codec, fps, (width, height))
-
-    # Получаем, отражаем и записываем кадры, пока запись включена.
-    while video_recording:
-        success, frame = camera.read()
-
-        if not success:
-            break
-
-        frame = cv2.flip(frame, 1)
-        writer.write(frame)
-
-    # Завершаем видеофайл и освобождаем камеру.
-    writer.release()
-    camera.release()
-
-    # Добавляем сведения о записанном видео в базу данных.
-    relative_path = "camera_videos/" + filename
-    media_id = save_media_to_db(video_name, "camera_video", relative_path)
-
-    # Сохраняем результат, чтобы эндпоинт остановки мог вернуть его клиенту.
-    last_video_info = {
-        "id": media_id,
-        "name": video_name,
-        "path": relative_path
-    }
-
-    # Отмечаем, что запись закончилась.
-    video_recording = False
+    save_media_to_db(name, "photo", photo_path)
+    return jsonify(result="success", name=name)
 
 
 @app.route("/start_video/", methods=["POST"])
 def start_video():
-    # Разрешаем функции менять общие переменные записи.
-    global video_recording, video_thread
-    global current_video_name, last_video_info
+    global video_recording, current_video_path
 
-    # Не запускаем ещё одну запись, если предыдущая уже идёт.
     if video_recording:
         return jsonify(result="error", message="Запись уже идёт"), 409
 
-    # Получаем название видео и подготавливаем состояние новой записи.
-    data = request.get_json()
-    current_video_name = data.get("name")
-    last_video_info = None
+    # После конфликта названий сначала нужно назвать предыдущее видео.
+    if current_video_path is not None:
+        return jsonify(
+            result="error",
+            message="Сохраните предыдущее видео через /stop_video/ с другим названием"
+        ), 409
+
+    filename = datetime.now().strftime("video_%Y%m%d_%H%M%S_%f.mp4")
+    video_path = VIDEO_DIR / filename
+
+    # Записываем зеркальное видео без звука.
+    config = camera.create_video_configuration(transform=Transform(hflip=True))
+    camera.configure(config)
+    encoder = H264Encoder()
+    output = FfmpegOutput(str(video_path))
+    camera.start_recording(encoder, output)
+
+    # Picamera2 продолжает запись в фоне после ответа сервера.
+    current_video_path = video_path
     video_recording = True
-
-    # Запускаем запись отдельно, чтобы сервер мог принимать другие запросы.
-    video_thread = threading.Thread(
-        target=record_video,
-        args=(current_video_name,)
-    )
-    video_thread.start()
-
-    # Сообщаем клиенту о запуске записи.
-    return jsonify(
-        result="success",
-        status="recording",
-        name=current_video_name
-    )
+    return jsonify(result="success", status="recording")
 
 
 @app.route("/video_status/", methods=["GET"])
 def video_status():
-    # Определяем состояние записи по общей переменной.
+    # Это состояние записи, а не проверка исправности оборудования.
     status = "stopped"
-
     if video_recording:
         status = "recording"
-
-    # Возвращаем состояние и название видео.
-    return jsonify(status=status, name=current_video_name)
+    return jsonify(status=status)
 
 
 @app.route("/stop_video/", methods=["POST"])
 def stop_video():
-    global video_recording
+    global video_recording, current_video_path
 
-    # Если запись не идёт, сообщаем об этом клиенту.
-    if not video_recording:
-        return jsonify(result="error", message="Запись не идёт"), 409
+    if not video_recording and current_video_path is None:
+        return jsonify(result="error", message="Нет видео для сохранения"), 409
 
-    # Останавливаем цикл записи и ждём завершения сохранения видео.
-    video_recording = False
-    video_thread.join()
+    # Название необязательно: без него назначаем video1, video2...
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify(result="error", message="Body должен быть JSON-объектом"), 400
+    name = data.get("name")
+    if name is not None and not isinstance(name, str):
+        return jsonify(result="error", message="name должен быть строкой"), 400
+    if name is not None:
+        name = name.strip()
+    if not name:
+        name = get_auto_name("video")
 
-    # Возвращаем сведения о сохранённом видео.
-    return jsonify(
-        result="success",
-        status="stopped",
-        video=last_video_info
+    # Останавливаем запись только при первом запросе.
+    if video_recording:
+        camera.stop_recording()
+        video_recording = False
+
+    # Видео уже записано. При конфликте ждём запроса с новым названием.
+    if find_media(name, "video") is not None:
+        return jsonify(
+            result="error",
+            status="stopped",
+            message="Видео записано, но название занято. Повторите /stop_video/ с другим названием"
+        ), 409
+
+    save_media_to_db(name, "video", current_video_path)
+    current_video_path = None
+    return jsonify(result="success", name=name)
+
+
+@app.route("/get_media/", methods=["POST"])
+def get_media():
+    # Название и тип передаём в body, без параметров в URL.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(result="error", message="Отправьте JSON с name и type"), 400
+    media_type = data.get("type")
+    name = data.get("name")
+    if media_type not in ("photo", "video"):
+        return jsonify(result="error", message="type должен быть photo или video"), 400
+    if not isinstance(name, str) or not name.strip():
+        return jsonify(result="error", message="Укажите name"), 400
+
+    row = find_media(name.strip(), media_type)
+    if row is None or not Path(row[3]).is_file():
+        return jsonify(result="error", message="Контент не найден"), 404
+
+    mimetype = "image/jpeg"
+    extension = ".jpg"
+    if media_type == "video":
+        mimetype = "video/mp4"
+        extension = ".mp4"
+
+    # При скачивании показываем название из базы, а не служебную дату.
+    return send_file(
+        row[3], mimetype=mimetype, as_attachment=True,
+        download_name=row[1] + extension
     )
 
 
-@app.route("/set_board_photo/", methods=["POST"])
-def set_board_photo():
-    # Получаем загруженный файл из поля формы с названием file.
-    file = request.files["file"]
+@app.route("/delete_media/", methods=["DELETE"])
+def delete_media():
+    # Тип обязателен, название можно не указывать.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify(result="error", message="Отправьте JSON с type"), 400
+    name = data.get("name")
+    media_type = data.get("type")
+    if media_type not in ("photo", "video"):
+        return jsonify(result="error", message="type должен быть photo или video"), 400
+    if name is not None and not isinstance(name, str):
+        return jsonify(result="error", message="name должен быть строкой"), 400
+    if name is not None:
+        name = name.strip()
 
-    # Создаём имя и сохраняем полученный файл в папку доски.
-    filename = datetime.now().strftime("board_%Y%m%d_%H%M%S_%f.jpg")
-    file.save(BOARD_DIR / filename)
-
-    # Добавляем сведения о картинке в базу данных.
-    save_media_to_db(
-        file.filename,
-        "board_photo",
-        "board_photos/" + filename
-    )
-
-    # Подтверждаем загрузку.
-    return jsonify(result="success")
+    # С названием удаляем выбранный файл, без названия — последний по типу.
+    if name:
+        row = find_media(name, media_type)
+    else:
+        row = find_last_media(media_type)
+    if row is None:
+        return jsonify(result="error", message="Контент не найден"), 404
+    return delete_media_record(row)
 
 
-@app.route("/media/<path:filename>", methods=["GET"])
-def get_media(filename):
-    # Отправляем клиенту запрошенный файл из папки media.
-    return send_from_directory(MEDIA_DIR, filename)
-
-
-@app.route("/board/", methods=["GET"])
-def board():
-    # Находим в базе последнюю загруженную картинку для доски.
+@app.route("/list_media/", methods=["GET"])
+def list_media():
+    # Берём названия, типы и даты из базы. Последние записи идут первыми.
     connection = sqlite3.connect(DATABASE_PATH)
-
     cursor = connection.execute("""
-        SELECT path FROM media
-        WHERE type = 'board_photo'
+        SELECT name, type, created_at
+        FROM media
+        WHERE type IN ('photo', 'video')
         ORDER BY id DESC
-        LIMIT 1
     """)
-
-    # Получаем найденную запись и закрываем соединение.
-    row = cursor.fetchone()
+    rows = cursor.fetchall()
     connection.close()
 
-    # Если картинок ещё нет, показываем текст.
-    if row is None:
-        return "Фото пока не загружено"
+    # Собираем обычный текст, который Postman покажет в Body ответа.
+    lines = ["Сохранённые фото и видео", ""]
+    for name, media_type, created_at in rows:
+        date = datetime.fromisoformat(created_at)
+        date = date.strftime("%Y-%m-%d %H:%M:%S")
+        lines.append(
+            f"Тип: {media_type} | Название: {name} | Создано: {date}"
+        )
 
-    # Возвращаем страницу, которая показывает картинку на чёрном фоне.
-    # Браузер получает само изображение через эндпоинт /media/.
-    return f"""
-    <html>
-        <body style="background: black; margin: 0; display: flex;
-                     justify-content: center; align-items: center;
-                     height: 100vh;">
-            <img src="/media/{row[0]}"
-                 style="max-width: 100%; max-height: 100%;">
-        </body>
-    </html>
-    """
+    if not rows:
+        lines.append("Сохранённых фото и видео пока нет.")
+
+    # Возвращаем сам текст без ссылки и без принудительного скачивания файла.
+    text = "\n".join(lines)
+    return app.response_class(text, content_type="text/plain; charset=utf-8")
 
 
-# При прямом запуске файла подготавливаем базу и запускаем сервер.
-# threaded=True позволяет обрабатывать запросы во время трансляции.
 if __name__ == "__main__":
     init_db()
-    app.run(debug=False, threaded=True)
+    try:
+        # Один процесс и последовательная обработка запросов:
+        # проверка названия и сохранение не мешают друг другу.
+        # Запись видео работает отдельно средствами Picamera2.
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
+    finally:
+        camera.close()
