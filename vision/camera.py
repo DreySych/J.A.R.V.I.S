@@ -2,12 +2,15 @@ from pathlib import Path
 from datetime import datetime
 from time import sleep
 import sqlite3
+import subprocess
+import signal
 
 from flask import Flask, request, jsonify, send_file
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder
-from picamera2.outputs import FfmpegOutput
+from picamera2.outputs import FfmpegOutput, Output
 from libcamera import Transform
+from gpiozero import LED
 
 
 # Сервер и папки с файлами рядом с camera.py.
@@ -20,10 +23,98 @@ DATABASE_PATH = BASE_DIR / "database.db"
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
+# GPIO17 — физический пин 11. Светодиод подключаем через резистор.
+RECORDING_LED_PIN = 17
+recording_led = LED(RECORDING_LED_PIN, initial_value=False)
+
 # Камеру используем по очереди для фото и видео.
 camera = Picamera2()
 video_recording = False
 current_video_path = None
+current_video_output = None
+
+# Используем название карты, а не номер 2: номер может меняться.
+MICROPHONE_DEVICE = "plughw:CARD=INMP441,DEV=0"
+# L/R микрофона подключён к земле — голос находится в левом канале.
+MICROPHONE_CHANNEL = 0
+
+# Постоянный идентификатор для центрального мозга.
+MODULE_ID = "camera-01"
+
+
+def set_recording_state(active):
+    # Статус записи и светодиод всегда переключаем вместе.
+    global video_recording
+    recording_led.value = active
+    video_recording = active
+
+
+def stop_server(signum, frame):
+    # При обычном kill завершаем сервер через блок finally внизу файла.
+    raise SystemExit(0)
+
+
+class MicrophoneOutput(FfmpegOutput):
+    # Обычный FfmpegOutput записывает звук через PulseAudio.
+    # Получаем звук INMP441 через ALSA и сами ждём завершения MP4.
+    def start(self):
+        command = [
+            "ffmpeg", "-loglevel", "warning", "-y",
+            # Вход 0: звук, два 32-битных канала по 48 кГц.
+            "-thread_queue_size", "1024",
+            "-f", "alsa", "-c:a", "pcm_s32le",
+            "-ar", "48000", "-ac", "2",
+            "-i", MICROPHONE_DEVICE,
+            # Вход 1: кадры H.264 от Picamera2 через канал stdin.
+            "-thread_queue_size", "64",
+            # Не тратим несколько секунд на анализ входящего видео:
+            # в это время захват ALSA может переполнять свой буфер.
+            "-probesize", "65536", "-analyzeduration", "100000",
+            "-use_wallclock_as_timestamps", "1",
+            "-f", "h264", "-i", "pipe:0",
+            # Собираем MP4: видео без повторного сжатия, звук AAC моно.
+            "-map", "1:v:0", "-map", "0:a:0",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-af", "pan=mono|c0=c" + str(MICROPHONE_CHANNEL),
+            # Завершаем MP4, когда закончится поток видеокадров.
+            "-shortest", self.output_filename
+        ]
+        self.ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
+        # Даём FFmpeg открыть микрофон и проверяем ранние ошибки запуска.
+        sleep(0.3)
+        if self.ffmpeg.poll() is not None:
+            self.ffmpeg.stdin.close()
+            self.ffmpeg = None
+            raise RuntimeError("FFmpeg не смог открыть микрофон. Смотрите терминал сервера.")
+        Output.start(self)
+
+    def stop(self):
+        # Базовый FfmpegOutput с audio=True ждёт лишь 1 секунду,
+        # затем принудительно завершает FFmpeg. Для нашего ALSA-потока
+        # закрываем видеовход и даём -shortest штатно завершить MP4.
+        Output.stop(self)
+        process = self.ffmpeg
+        if process is None:
+            return
+
+        try:
+            try:
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                self.output_broken = True
+
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self.output_broken = True
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+        finally:
+            self.ffmpeg = None
 
 
 def init_db():
@@ -141,6 +232,104 @@ def delete_media_record(row):
     return jsonify(result="success")
 
 
+@app.route("/module_info/", methods=["GET"])
+def module_info():
+    # Адрес берём из запроса, чтобы не прописывать меняющийся IP вручную.
+    # В parameters оставляем типы как в образце модуля светильника.
+    return jsonify(
+        module_id=MODULE_ID,
+        description=(
+            "Модуль камеры Raspberry Pi. Снимает зеркальные JPG-фото и MP4-видео, "
+            "поддерживает запись звука с INMP441, получение и удаление контента. "
+            "Во время записи видео горит внешний светодиод на GPIO17. "
+            "Фото и видео хранятся в файлах, сведения о них — в SQLite. "
+            "Параметры тулов передаются в JSON body. "
+            "Тип контента: photo или video. Повтор названия внутри типа возвращает 409."
+        ),
+        endpoint=request.host_url.rstrip("/"),
+        tools=[
+            {
+                "name": "capture_photo",
+                "description": (
+                    "Делает и сохраняет JPG-фото. name необязателен: без него "
+                    "назначается photo1, photo2 и далее. Возвращает JSON с result=success "
+                    "и именем. Во время записи видео недоступен (409)."
+                ),
+                "method": "POST",
+                "path": "/capture_photo/",
+                "parameters": {"name": "string"}
+            },
+            {
+                "name": "start_video",
+                "description": (
+                    "Начинает запись зеркального MP4-видео со звуком INMP441. "
+                    "Запись идёт до вызова stop_video. Название здесь не передаётся. "
+                    "Возвращает JSON с result=success и status=recording."
+                ),
+                "method": "POST",
+                "path": "/start_video/",
+                "parameters": {}
+            },
+            {
+                "name": "video_status",
+                "description": (
+                    "Возвращает JSON со статусом записи: recording или stopped. "
+                    "При recording горит внешний светодиод, при stopped он выключен."
+                ),
+                "method": "GET",
+                "path": "/video_status/",
+                "parameters": {}
+            },
+            {
+                "name": "stop_video",
+                "description": (
+                    "Останавливает и сохраняет видео. name необязателен: без него "
+                    "назначается video1, video2 и далее. Возвращает JSON с result=success "
+                    "и именем. При занятом названии запись останавливается, возвращается "
+                    "409; повторите этот тул с другим именем или без имени до перезапуска сервера."
+                ),
+                "method": "POST",
+                "path": "/stop_video/",
+                "parameters": {"name": "string"}
+            },
+            {
+                "name": "get_media",
+                "description": (
+                    "Возвращает сам JPG- или MP4-файл. name и type обязательны. "
+                    "type: photo или video. Если контент не найден, возвращает 404."
+                ),
+                "method": "POST",
+                "path": "/get_media/",
+                "parameters": {"name": "string", "type": "string"}
+            },
+            {
+                "name": "delete_media",
+                "description": (
+                    "Удаляет файл и запись в БД. type обязателен: photo или video. "
+                    "name необязателен. С непустым name удаляет только указанный контент; "
+                    "если он не найден, возвращает 404. Без name удаляет последний "
+                    "сохранённый файл выбранного типа независимо от названия. "
+                    "Если файлов этого типа нет, возвращает 404. При успехе возвращает "
+                    "JSON с result=success."
+                ),
+                "method": "DELETE",
+                "path": "/delete_media/",
+                "parameters": {"type": "string", "name": "string"}
+            },
+            {
+                "name": "list_media",
+                "description": (
+                    "Возвращает обычный текст со списком сохранённого контента: "
+                    "названия, типы и даты сохранения из БД. Последние записи идут первыми."
+                ),
+                "method": "GET",
+                "path": "/list_media/",
+                "parameters": {}
+            }
+        ]
+    )
+
+
 @app.route("/capture_photo/", methods=["POST"])
 def capture_photo():
     # Не фотографируем во время записи видео.
@@ -184,7 +373,7 @@ def capture_photo():
 
 @app.route("/start_video/", methods=["POST"])
 def start_video():
-    global video_recording, current_video_path
+    global video_recording, current_video_path, current_video_output
 
     if video_recording:
         return jsonify(result="error", message="Запись уже идёт"), 409
@@ -199,16 +388,28 @@ def start_video():
     filename = datetime.now().strftime("video_%Y%m%d_%H%M%S_%f.mp4")
     video_path = VIDEO_DIR / filename
 
-    # Записываем зеркальное видео без звука.
+    # Записываем зеркальное видео со звуком INMP441.
     config = camera.create_video_configuration(transform=Transform(hflip=True))
     camera.configure(config)
     encoder = H264Encoder()
-    output = FfmpegOutput(str(video_path))
-    camera.start_recording(encoder, output)
+    output = MicrophoneOutput(str(video_path), audio=True)
+    try:
+        camera.start_recording(encoder, output)
+    except Exception:
+        # При неудачном запуске не оставляем камеру и FFmpeg занятыми.
+        camera.stop()
+        camera.stop_encoder()
+        if output.ffmpeg is not None:
+            output.stop()
+        return jsonify(
+            result="error",
+            message="Не удалось начать запись со звуком. Проверьте терминал сервера."
+        ), 500
 
     # Picamera2 продолжает запись в фоне после ответа сервера.
     current_video_path = video_path
-    video_recording = True
+    current_video_output = output
+    set_recording_state(True)
     return jsonify(result="success", status="recording")
 
 
@@ -223,7 +424,7 @@ def video_status():
 
 @app.route("/stop_video/", methods=["POST"])
 def stop_video():
-    global video_recording, current_video_path
+    global video_recording, current_video_path, current_video_output
 
     if not video_recording and current_video_path is None:
         return jsonify(result="error", message="Нет видео для сохранения"), 409
@@ -244,8 +445,25 @@ def stop_video():
 
     # Останавливаем запись только при первом запросе.
     if video_recording:
+        ffmpeg = current_video_output.ffmpeg
         camera.stop_recording()
-        video_recording = False
+        set_recording_state(False)
+        # Ждём освобождения микрофона и окончательного закрытия MP4.
+        if ffmpeg is not None:
+            try:
+                ffmpeg.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                ffmpeg.kill()
+                ffmpeg.wait()
+        if current_video_output.output_broken or (ffmpeg is not None and ffmpeg.returncode != 0):
+            current_video_path = None
+            current_video_output = None
+            return jsonify(
+                result="error",
+                message="Ошибка записи MP4 со звуком. Проверьте терминал сервера.",
+                ffmpeg_code=ffmpeg.returncode if ffmpeg is not None else None
+            ), 500
+        current_video_output = None
 
     # Видео уже записано. При конфликте ждём запроса с новым названием.
     if find_media(name, "video") is not None:
@@ -346,11 +564,16 @@ def list_media():
 
 
 if __name__ == "__main__":
-    init_db()
+    signal.signal(signal.SIGTERM, stop_server)
     try:
+        init_db()
         # Один процесс и последовательная обработка запросов:
         # проверка названия и сохранение не мешают друг другу.
         # Запись видео работает отдельно средствами Picamera2.
         app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
     finally:
-        camera.close()
+        try:
+            camera.close()
+        finally:
+            set_recording_state(False)
+            recording_led.close()
