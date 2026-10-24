@@ -4,11 +4,13 @@ from time import sleep
 import sqlite3
 import subprocess
 import signal
+import json
+import wave
 
 from flask import Flask, request, jsonify, send_file
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder
-from picamera2.outputs import FfmpegOutput, Output
+from picamera2.outputs import FileOutput
 from libcamera import Transform
 from gpiozero import LED
 
@@ -18,10 +20,12 @@ app = Flask(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 PHOTO_DIR = BASE_DIR / "media" / "photos"
 VIDEO_DIR = BASE_DIR / "media" / "videos"
+RECORDING_DIR = BASE_DIR / "media" / "recording"
 DATABASE_PATH = BASE_DIR / "database.db"
 
 PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+RECORDING_DIR.mkdir(parents=True, exist_ok=True)
 
 # GPIO17 — физический пин 11. Светодиод подключаем через резистор.
 RECORDING_LED_PIN = 17
@@ -34,9 +38,12 @@ current_video_path = None
 current_video_output = None
 
 # Используем название карты, а не номер 2: номер может меняться.
-MICROPHONE_DEVICE = "plughw:CARD=INMP441,DEV=0"
+MICROPHONE_DEVICE = "plughw:CARD=sndrpigooglevoi,DEV=0"
 # L/R микрофона подключён к земле — голос находится в левом канале.
 MICROPHONE_CHANNEL = 0
+
+# Одинаковая частота для камеры, кодировщика и временных меток MP4.
+VIDEO_FPS = 30
 
 # Постоянный идентификатор для центрального мозга.
 MODULE_ID = "camera-01"
@@ -54,67 +61,101 @@ def stop_server(signum, frame):
     raise SystemExit(0)
 
 
-class MicrophoneOutput(FfmpegOutput):
-    # Обычный FfmpegOutput записывает звук через PulseAudio.
-    # Получаем звук INMP441 через ALSA и сами ждём завершения MP4.
+class RecordingOutput(FileOutput):
+    # Во время съёмки пишем H.264 и WAV отдельно, без живого микширования.
+    # После остановки собираем готовые файлы в один MP4.
+    def __init__(self, video_path):
+        self.video_path = Path(video_path)
+        self.raw_path = RECORDING_DIR / (self.video_path.stem + ".h264")
+        self.audio_path = RECORDING_DIR / (self.video_path.stem + ".wav")
+        self.audio_process = None
+        self.error = None
+        self.stopped = False
+        super().__init__(str(self.raw_path))
+
     def start(self):
+        # arecord уже успешно использовался для отдельной проверки INMP441.
+        # -N не позволяет зависнуть, если микрофон занят другим процессом.
         command = [
-            "ffmpeg", "-loglevel", "warning", "-y",
-            # Вход 0: звук, два 32-битных канала по 48 кГц.
-            "-thread_queue_size", "1024",
-            "-f", "alsa", "-c:a", "pcm_s32le",
-            "-ar", "48000", "-ac", "2",
-            "-i", MICROPHONE_DEVICE,
-            # Вход 1: кадры H.264 от Picamera2 через канал stdin.
-            "-thread_queue_size", "64",
-            # Не тратим несколько секунд на анализ входящего видео:
-            # в это время захват ALSA может переполнять свой буфер.
-            "-probesize", "65536", "-analyzeduration", "100000",
-            "-use_wallclock_as_timestamps", "1",
-            "-f", "h264", "-i", "pipe:0",
-            # Собираем MP4: видео без повторного сжатия, звук AAC моно.
-            "-map", "1:v:0", "-map", "0:a:0",
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-            "-af", "pan=mono|c0=c" + str(MICROPHONE_CHANNEL),
-            # Завершаем MP4, когда закончится поток видеокадров.
-            "-shortest", self.output_filename
+            "arecord", "-q", "-N", "--fatal-errors",
+            "-D", MICROPHONE_DEVICE, "-f", "S32_LE",
+            "-r", "48000", "-c", "2", "-t", "wav",
+            "-B", "500000", str(self.audio_path)
         ]
-        self.ffmpeg = subprocess.Popen(command, stdin=subprocess.PIPE)
-        # Даём FFmpeg открыть микрофон и проверяем ранние ошибки запуска.
-        sleep(0.3)
-        if self.ffmpeg.poll() is not None:
-            self.ffmpeg.stdin.close()
-            self.ffmpeg = None
-            raise RuntimeError("FFmpeg не смог открыть микрофон. Смотрите терминал сервера.")
-        Output.start(self)
+        self.audio_process = subprocess.Popen(command, stdin=subprocess.DEVNULL)
+        sleep(0.15)
+        if self.audio_process.poll() is not None:
+            self.stop()
+            raise RuntimeError("Не удалось открыть микрофон через arecord")
+        super().start()
 
     def stop(self):
-        # Базовый FfmpegOutput с audio=True ждёт лишь 1 секунду,
-        # затем принудительно завершает FFmpeg. Для нашего ALSA-потока
-        # закрываем видеовход и даём -shortest штатно завершить MP4.
-        Output.stop(self)
-        process = self.ffmpeg
+        if self.stopped:
+            return
+        self.stopped = True
+        # Сначала закрываем H.264, затем штатно завершаем WAV.
+        super().stop()
+        process = self.audio_process
         if process is None:
             return
-
+        if process.poll() is not None:
+            self.error = "arecord остановился во время записи. Проверьте терминал сервера."
+            return
+        process.send_signal(signal.SIGINT)
         try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.error = "Микрофон не завершил запись за 5 секунд"
+            process.terminate()
             try:
-                process.stdin.close()
-            except (BrokenPipeError, OSError):
-                self.output_broken = True
-
-            try:
-                process.wait(timeout=15)
+                process.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.output_broken = True
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-        finally:
-            self.ffmpeg = None
+                process.kill()
+                process.wait()
+
+    def make_mp4(self):
+        if self.error:
+            raise RuntimeError(self.error)
+        if self.dead or self.raw_path.stat().st_size == 0:
+            raise RuntimeError("Не записались видеокадры")
+        with wave.open(str(self.audio_path), "rb") as audio:
+            if audio.getnframes() == 0:
+                raise RuntimeError("Микрофон создал пустую запись")
+            duration = audio.getnframes() / audio.getframerate()
+
+        # Оба входа уже завершены: нет бесконечного ALSA-потока,
+        # который мог мешать закрытию MP4 и удалять аудиодорожку.
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+            "-fflags", "+genpts", "-r", str(VIDEO_FPS),
+            "-f", "h264", "-i", str(self.raw_path),
+            "-i", str(self.audio_path),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
+            "-bsf:v", (
+                f"setts=pts=N/({VIDEO_FPS}*TB):dts=N/({VIDEO_FPS}*TB)"
+                f":duration=1/({VIDEO_FPS}*TB)"
+            ),
+            "-af", "asetpts=N/SR/TB,pan=mono|c0=c" + str(MICROPHONE_CHANNEL),
+            "-shortest", "-movflags", "+faststart", str(self.video_path)
+        ]
+        result = subprocess.run(
+            command, capture_output=True, text=True,
+            timeout=max(60, int(duration * 3) + 30)
+        )
+        if result.returncode != 0:
+            print(result.stderr, flush=True)
+            raise RuntimeError("FFmpeg не смог собрать видео и звук в MP4")
+        if not has_video_and_audio(self.video_path):
+            raise RuntimeError("В готовом MP4 отсутствует видео или аудиодорожка")
+
+        # При ошибке исходные файлы остаются для проверки и восстановления.
+        # Удаляем их только после успешной сборки и проверки MP4.
+        for path in (self.raw_path, self.audio_path):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                print("Не удалось удалить временный файл:", path, flush=True)
 
 
 def init_db():
@@ -138,6 +179,23 @@ def init_db():
     """)
     connection.commit()
     connection.close()
+
+
+def has_video_and_audio(path):
+    # Не возвращаем success для MP4, в котором сохранилось только видео.
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+         "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode != 0:
+        return False
+    streams = json.loads(result.stdout).get("streams", [])
+    stream_types = set()
+    for stream in streams:
+        if float(stream.get("duration", 0)) > 0:
+            stream_types.add(stream.get("codec_type"))
+    return "video" in stream_types and "audio" in stream_types
 
 
 def get_auto_name(media_type):
@@ -285,7 +343,8 @@ def module_info():
                 "description": (
                     "Останавливает и сохраняет видео. name необязателен: без него "
                     "назначается video1, video2 и далее. Возвращает JSON с result=success "
-                    "и именем. При занятом названии запись останавливается, возвращается "
+                    "и именем. После остановки сборка MP4 может занять несколько секунд. "
+                    "При занятом названии запись останавливается, возвращается "
                     "409; повторите этот тул с другим именем или без имени до перезапуска сервера."
                 ),
                 "method": "POST",
@@ -389,17 +448,29 @@ def start_video():
     video_path = VIDEO_DIR / filename
 
     # Записываем зеркальное видео со звуком INMP441.
-    config = camera.create_video_configuration(transform=Transform(hflip=True))
+    config = camera.create_video_configuration(
+        main={"size": (1280, 720)},
+        controls={"FrameRate": VIDEO_FPS},
+        transform=Transform(hflip=True)
+    )
     camera.configure(config)
-    encoder = H264Encoder()
-    output = MicrophoneOutput(str(video_path), audio=True)
+    # Ключевой кадр раз в секунду упрощает перемотку в видеоплеере.
+    encoder = H264Encoder(
+        bitrate=5_000_000,
+        repeat=True,
+        iperiod=VIDEO_FPS,
+        framerate=VIDEO_FPS,
+        profile="baseline"
+    )
+    output = RecordingOutput(video_path)
     try:
         camera.start_recording(encoder, output)
-    except Exception:
-        # При неудачном запуске не оставляем камеру и FFmpeg занятыми.
-        camera.stop()
-        camera.stop_encoder()
-        if output.ffmpeg is not None:
+    except Exception as error:
+        print("Ошибка запуска записи:", error, flush=True)
+        try:
+            camera.stop()
+            camera.stop_encoder()
+        finally:
             output.stop()
         return jsonify(
             result="error",
@@ -445,23 +516,27 @@ def stop_video():
 
     # Останавливаем запись только при первом запросе.
     if video_recording:
-        ffmpeg = current_video_output.ffmpeg
-        camera.stop_recording()
-        set_recording_state(False)
-        # Ждём освобождения микрофона и окончательного закрытия MP4.
-        if ffmpeg is not None:
+        output = current_video_output
+        try:
             try:
-                ffmpeg.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                ffmpeg.kill()
-                ffmpeg.wait()
-        if current_video_output.output_broken or (ffmpeg is not None and ffmpeg.returncode != 0):
+                camera.stop_recording()
+            finally:
+                try:
+                    output.stop()
+                finally:
+                    set_recording_state(False)
+            # Теперь камера и микрофон выключены, диод погас.
+            # Объединение готовых файлов может занять несколько секунд.
+            output.make_mp4()
+        except Exception as error:
+            print("Ошибка сохранения записи:", error, flush=True)
             current_video_path = None
             current_video_output = None
             return jsonify(
                 result="error",
-                message="Ошибка записи MP4 со звуком. Проверьте терминал сервера.",
-                ffmpeg_code=ffmpeg.returncode if ffmpeg is not None else None
+                message=str(error),
+                raw_video=str(output.raw_path),
+                raw_audio=str(output.audio_path)
             ), 500
         current_video_output = None
 
@@ -575,5 +650,9 @@ if __name__ == "__main__":
         try:
             camera.close()
         finally:
-            set_recording_state(False)
-            recording_led.close()
+            try:
+                if current_video_output is not None:
+                    current_video_output.stop()
+            finally:
+                set_recording_state(False)
+                recording_led.close()
