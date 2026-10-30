@@ -4,4 +4,4 @@
 models/
 __pycache__/
 *.py[cod]
-gigacode/
+.gigacode/

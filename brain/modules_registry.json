@@ -1,17 +1,18 @@
 [
   {
     "module_id": "light-01",
-    "module_type": "light",
-    "status": "online",
+    "description": "Светильник на рабочем столе в спальне.",
     "endpoint": "http://10.177.33.150:8080",
     "tools": [
       {
         "name": "set_color",
-        "description": "Устанавливает цвет света",
+        "description": "Меняет цвет света. r, g, b — целые числа от 0 до 255.",
+        "method": "POST",
+        "path": "/api/color",
         "parameters": {
-          "r": "int",
-          "g": "int",
-          "b": "int"
+          "r": "integer",
+          "g": "integer",
+          "b": "integer"
         }
       }
     ]
