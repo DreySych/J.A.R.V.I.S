@@ -67,7 +67,7 @@ def chat():
 def add_module():
     data = request.get_json(silent=True) or {}
 
-    required = ["module_id", "module_type", "status", "tools"]
+    required = ["module_id", "description", "endpoint", "tools"]
     if not all(k in data for k in required):
         return jsonify({
             "success": False,
@@ -77,13 +77,12 @@ def add_module():
     with REGISTRY_PATH.open("r", encoding="utf-8") as f:
         registry = json.load(f)
 
-    if any(m["module_id"] == data["module_id"] for m in registry):
-        return jsonify({
-            "success": False,
-            "error": f"Module {data['module_id']} already exists"
-        }), 409
-
-    registry.append(data)
+    for index, module in enumerate(registry):
+        if module["module_id"] == data["module_id"]:
+            registry[index] = data
+            break
+    else:
+        registry.append(data)
 
     with REGISTRY_PATH.open("w", encoding="utf-8") as f:
         json.dump(registry, f, ensure_ascii=False, indent=2)

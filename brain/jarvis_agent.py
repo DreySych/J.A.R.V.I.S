@@ -41,6 +41,7 @@ _remember_fact = make_remember_fact(_memory)
 
 MEMORY_TOOL_NAME = "remember_fact"
 MAX_MEMORY_CALLS = 3
+MAX_TOOL_CALLS = 5
 
 def register_memory_tool(all_tools):
     all_tools.append(MEMORY_TOOL)
@@ -75,10 +76,12 @@ def ask_jarvis(user_text):
 
     max_iterations = 5
     output_text = ""
-    action_done = False
+    tool_calls_done = 0
     memory_calls = 0
+    executed_signatures = set()
 
     for iteration in range(max_iterations):
+        is_last = iteration == max_iterations - 1
         try:
             response = client.responses.create(
                 model=f"gpt://{YANDEX_CLOUD_FOLDER}/{YANDEX_CLOUD_MODEL}",
@@ -86,7 +89,7 @@ def ask_jarvis(user_text):
                 instructions=build_instructions(_memory),
                 input=conversation,
                 max_output_tokens=1500,
-                tools=all_tools,
+                tools=None if is_last else all_tools,
             )
         except Exception as e:
             _memory.add_assistant("Сэр, произошла ошибка при обращении к модели.", turn)
@@ -104,15 +107,19 @@ def ask_jarvis(user_text):
             if calls:
                 if output_text:
                     conversation.append({"role": "assistant", "content": output_text})
+
                 for item in calls:
                     call_id = getattr(item, "call_id", "")
                     name = getattr(item, "name", "")
                     arguments_str = getattr(item, "arguments", "")
+                    print(f"[iter {iteration}] call={name} args={arguments_str}")
 
                     try:
                         arguments_dict = json.loads(arguments_str or "{}")
                     except (json.JSONDecodeError, TypeError):
                         arguments_dict = {}
+
+                    signature = (name, arguments_str)
 
                     if name == MEMORY_TOOL_NAME:
                         if memory_calls >= MAX_MEMORY_CALLS:
@@ -123,16 +130,21 @@ def ask_jarvis(user_text):
                                 result = _remember_fact(**arguments_dict)
                             except TypeError as exc:
                                 result = "Ошибка вызова remember_fact: {0}".format(exc)
-                    elif action_done:
-                        result = "Отклонено: за один ответ разрешён только один инструмент."
+                    elif signature in executed_signatures:
+                        result = "Отклонено: этот вызов уже выполнялся в текущем запросе."
+                    elif tool_calls_done >= MAX_TOOL_CALLS:
+                        result = "Отклонено: слишком много вызовов инструментов за один ответ."
                     else:
+                        executed_signatures.add(signature)
                         try:
                             result = execute_tool_call(name, arguments_dict, tool_registry)
                         except Exception as exc:
                             result = "Ошибка выполнения '{0}': {1}".format(name, exc)
-                        action_done = True
+                        tool_calls_done += 1 if not result.startswith("Ошибка") else 0
 
                     result = str(result)
+                    print(f"[iter {iteration}] result={result[:200]!r}")
+
                     if not result.startswith("Отклонено"):
                         _memory.add_tool(name, result, turn)
 
@@ -150,6 +162,8 @@ def ask_jarvis(user_text):
             _memory.add_assistant(fallback, turn)
             return fallback
 
+        print(f"[iter {iteration}] types={[i.type for i in response.output or []]} text={output_text!r}")
+
         _memory.add_assistant(output_text, turn)
 
         print("Ответ J.A.R.V.I.S.:", output_text)
@@ -162,7 +176,6 @@ def ask_jarvis(user_text):
     fallback = "Сэр, не удалось завершить обработку запроса."
     _memory.add_assistant(fallback, turn)
     return fallback
-
 
 if __name__ == "__main__":
     user_text = ("Узнай официальный курс доллара США к российскому рублю на сегодня по данным Банка России. "

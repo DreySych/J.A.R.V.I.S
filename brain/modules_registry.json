@@ -16,5 +16,99 @@
         }
       }
     ]
+  },
+  {
+    "module_id": "desk-01",
+    "module_type": "",
+    "status": "",
+    "description": "Рейтинговая доска на экране.",
+    "endpoint": "http://172.24.115.232:8080",
+    "tools": [
+      {
+        "name": "addNewUser",
+        "description": "Добавляет пользователя на рейтинговую доску",
+        "method": "POST",
+        "path": "/addNewUser",
+        "parameters": {
+          "rqUid": "string",
+          "fio": "string",
+          "class": "string",
+          "message": "string",
+          "dateTime": "string"
+        }
+      }
+    ]
+  },
+  {
+    "module_id": "camera-01",
+    "description": "Модуль камеры Raspberry Pi. Снимает зеркальные JPG-фото и MP4-видео, поддерживает запись звука с INMP441, получение и удаление контента. Во время записи видео горит внешний светодиод на GPIO17. Фото и видео хранятся в файлах, сведения о них — в SQLite. Параметры тулов передаются в JSON body. Тип контента: photo или video. Повтор названия внутри типа возвращает 409.",
+    "endpoint": "http://172.24.115.100:5000",
+    "tools": [
+      {
+        "name": "capture_photo",
+        "description": "Делает фото. Если пользователь не указал имя, вызывай без name. Камера назначает имя сама. Не придумывай имя.",
+        "optional": ["name"],
+        "method": "POST",
+        "path": "/capture_photo",
+        "parameters": {
+          "name": "string"
+        }
+      },
+      {
+        "name": "start_video",
+        "description": "Начинает запись зеркального MP4-видео со звуком INMP441. Запись идёт до вызова stop_video. Название здесь не передаётся. Возвращает JSON с result=success и status=recording.",
+        "method": "POST",
+        "path": "/start_video",
+        "parameters": {}
+      },
+      {
+        "name": "video_status",
+        "description": "Возвращает JSON со статусом записи: recording или stopped. При recording горит внешний светодиод, при stopped он выключен.",
+        "method": "GET",
+        "path": "/video_status",
+        "parameters": {}
+      },
+        {
+        "name": "stop_video",
+        "description": "Останавливает текущую запись и сохраняет её в видеофайл. name — желаемое имя записи; если не указан, сервер назначит его сам. Возвращает JSON с result=success и name. Код 409 означает, что имя занято: повтори вызов без name, а не с другим придуманным именем.",
+        "optional": ["name"],
+        "method": "POST",
+        "path": "/stop_video",
+        "timeout": 60,
+        "parameters": {
+          "name": "string"
+        }
+      },
+      {
+        "name": "get_media",
+        "description": "Скачивает запись с камеры и сохраняет файл на диск этого компьютера. Никуда не отправляет. Возвращает путь к сохранённому файлу.",
+        "method": "POST",
+        "path": "/get_media/",
+        "binary": true,
+        "ext": "mp4",
+        "timeout": 60,
+        "parameters": {
+          "name": "string",
+          "type": "string"
+        }
+      },
+      {
+        "name": "delete_media",
+        "description": "Удаляет файл и запись в БД. type обязателен: photo или video. name необязателен. С непустым name удаляет только указанный контент; если он не найден, возвращает 404. Без name удаляет последний сохранённый файл выбранного типа независимо от названия. Если файлов этого типа нет, возвращает 404. При успехе возвращает JSON с result=success.",
+        "method": "DELETE",
+        "path": "/delete_media",
+        "parameters": {
+          "type": "string",
+          "name": "string"
+        }
+      },
+      {
+        "name": "list_media",
+        "description": "Возвращает обычный текст со списком сохранённого контента: названия, типы и даты сохранения из БД. Последние записи идут первыми.",
+        "method": "GET",
+        "path": "/list_media",
+        "parameters": {}
+      }
+    ]
   }
 ]
