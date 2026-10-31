@@ -80,7 +80,6 @@ def build_tools(modules):
                 "parameters": schema,
             })
 
-            # Store mapping: full_name -> (module, tool_def)
             tool_registry[full_name] = (module, tool_def)
 
     return tools, tool_registry
