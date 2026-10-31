@@ -11,7 +11,7 @@ voice = PiperVoice.load(PIPER_MODEL_PATH)
 def add_comma_after_sentence(text):
     text = text.strip()
 
-    text.replace(".", ",")
+    text.replace(".", "-")
 
     return text
 
