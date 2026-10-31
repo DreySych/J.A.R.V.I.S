@@ -89,6 +89,7 @@ def ask_jarvis(user_text):
                 tools=all_tools,
             )
         except Exception as e:
+            _memory.add_assistant("Сэр, произошла ошибка при обращении к модели.", turn)
             print("API error:", str(e))
             raise
 
