@@ -42,7 +42,7 @@ _remember_fact = make_remember_fact(_memory)
 MEMORY_TOOL_NAME = "remember_fact"
 MAX_MEMORY_CALLS = 3
 
-def register_memory_tool(all_tools, tool_registry):
+def register_memory_tool(all_tools):
     all_tools.append(MEMORY_TOOL)
 
 def to_api_items(messages):
@@ -64,7 +64,7 @@ def ask_jarvis(user_text):
 
     modules = load_modules(_REGISTRY_PATH)
     all_tools, tool_registry = build_tools(modules)
-    register_memory_tool(all_tools, tool_registry)
+    register_memory_tool(all_tools)
     all_tools.insert(0, {
         "type": "web_search",
         "search_context_size": "low",
@@ -75,6 +75,9 @@ def ask_jarvis(user_text):
 
     max_iterations = 5
     output_text = ""
+    action_done = False
+    memory_calls = 0
+
     for iteration in range(max_iterations):
         try:
             response = client.responses.create(
@@ -98,9 +101,8 @@ def ask_jarvis(user_text):
             ]
 
             if calls:
-                action_done = False
-                memory_calls = 0
-
+                if output_text:
+                    conversation.append({"role": "assistant", "content": output_text})
                 for item in calls:
                     call_id = getattr(item, "call_id", "")
                     name = getattr(item, "name", "")
@@ -116,20 +118,24 @@ def ask_jarvis(user_text):
                             result = "Отклонено: слишком много фактов за один ответ."
                         else:
                             memory_calls += 1
-                            result = _remember_fact(**arguments_dict)
+                            try:
+                                result = _remember_fact(**arguments_dict)
+                            except TypeError as exc:
+                                result = "Ошибка вызова remember_fact: {0}".format(exc)
                     elif action_done:
                         result = "Отклонено: за один ответ разрешён только один инструмент."
                     else:
-                        result = execute_tool_call(name, arguments_dict, tool_registry)
+                        try:
+                            result = execute_tool_call(name, arguments_dict, tool_registry)
+                        except Exception as exc:
+                            result = "Ошибка выполнения '{0}': {1}".format(name, exc)
                         action_done = True
+
+                    result = str(result)
+                    if not result.startswith("Отклонено"):
                         _memory.add_tool(name, result, turn)
 
-                    conversation.append({
-                        "type": "function_call",
-                        "call_id": call_id,
-                        "name": name,
-                        "arguments": arguments_str,
-                    })
+                    conversation.append(item.model_dump(exclude_none=True))
                     conversation.append({
                         "type": "function_call_output",
                         "call_id": call_id,
@@ -139,7 +145,9 @@ def ask_jarvis(user_text):
                 continue
 
         if not output_text:
-            return "Сэр, мне не удалось сформировать ответ. Попробуйте повторить запрос."
+            fallback = "Сэр, мне не удалось сформировать ответ. Попробуйте повторить запрос."
+            _memory.add_assistant(fallback, turn)
+            return fallback
 
         _memory.add_assistant(output_text, turn)
 
@@ -147,8 +155,12 @@ def ask_jarvis(user_text):
         return output_text
 
     if output_text:
+        _memory.add_assistant(output_text, turn)
         return output_text
-    return "Сэр, мне не удалось сформировать ответ. Попробуйте повторить запрос."
+
+    fallback = "Сэр, не удалось завершить обработку запроса."
+    _memory.add_assistant(fallback, turn)
+    return fallback
 
 
 if __name__ == "__main__":
