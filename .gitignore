@@ -3,4 +3,5 @@
 *.env
 models/
 __pycache__/
-*.pyc
+*.py[cod]
+.gigacode/

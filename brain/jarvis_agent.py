@@ -1,13 +1,23 @@
 import os
+import sys
+import json
 
 import openai
 from dotenv import load_dotenv
+
+from jarvis_tools import load_modules, build_tools, execute_tool_call
+from memory import MemoryManager
+from memory_tool import MEMORY_TOOL, make_remember_fact
+from prompt import build_instructions
+
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout = open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1)
 
 load_dotenv()
 
 YANDEX_CLOUD_FOLDER = os.getenv("YANDEX_FOLDER_ID")
 YANDEX_CLOUD_API_KEY = os.getenv("YANDEX_AI_TOKEN")
-YANDEX_CLOUD_MODEL = "deepseek-v4-flash/latest"
+YANDEX_CLOUD_MODEL = "deepseek-v4.1-flash"
 
 if not YANDEX_CLOUD_FOLDER:
     raise RuntimeError("В .env не задан YANDEX_FOLDER_ID")
@@ -15,6 +25,9 @@ if not YANDEX_CLOUD_FOLDER:
 if not YANDEX_CLOUD_API_KEY:
     raise RuntimeError("В .env не задан YANDEX_AI_TOKEN")
 
+_REGISTRY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "modules_registry.json"
+)
 
 client = openai.OpenAI(
     api_key=YANDEX_CLOUD_API_KEY,
@@ -23,72 +36,135 @@ client = openai.OpenAI(
     timeout=60.0,
 )
 
-JARVIS_INSTRUCTIONS = """
-Ты — J.A.R.V.I.S., персональный голосовой ИИ-ассистент пользователя,
-вдохновлённый J.A.R.V.I.S. из Marvel.
+_memory = MemoryManager()
+_remember_fact = make_remember_fact(_memory)
 
-Отвечай на русском языке, если пользователь не попросил иначе.
-Обращайся к пользователю «Сэр».
-Твой стиль: спокойный, точный, интеллектуальный, вежливый,
-слегка ироничный, но не фамильярный.
+MEMORY_TOOL_NAME = "remember_fact"
+MAX_MEMORY_CALLS = 3
 
-Твой ответ будет озвучиваться синтезатором речи.
-Пиши только чистый текст для произношения вслух.
+def register_memory_tool(all_tools):
+    all_tools.append(MEMORY_TOOL)
 
-Строго запрещено использовать:
-- Markdown;
-- символы * или **;
-- символы #;
-- символы - в начале строки;
-- списки;
-- таблицы;
-- кодовые блоки;
-- URL и ссылки;
-- эмодзи.
-
-Отвечай содержательно и понятно.
-Если вопрос требует объяснения, данных или нескольких шагов — дай полный,
-структурированный устный ответ.
-Не сокращай ответ искусственно, но не добавляй лишнюю воду.
-
-Если не уверен в фактах или данных недостаточно — честно скажи об этом.
-Не выдумывай факты, ссылки, источники, даты или события.
-Если используешь веб-поиск, не называй источники и не давай ссылок.
-
-Не упоминай API, модель, токены, Яндекс или внутреннее устройство системы,
-если пользователь прямо не спрашивает об этом.
-"""
-
+def to_api_items(messages):
+    items = []
+    for m in messages:
+        if m.get("type") == "tool":
+            items.append({
+                "role": "assistant",
+                "content": f"[{m.get('name')}] {m.get('content')}",
+            })
+        elif m.get("role") in ("user", "assistant") and m.get("content"):
+            items.append({"role": m["role"], "content": m["content"]})
+    return items
 
 def ask_jarvis(user_text):
 
     if not user_text or not user_text.strip():
         return "Сэр, сформулируйте запрос, пожалуйста."
 
-    response = client.responses.create(
-        model=f"gpt://{YANDEX_CLOUD_FOLDER}/{YANDEX_CLOUD_MODEL}",
-        temperature=0.3,
-        instructions=JARVIS_INSTRUCTIONS,
-        input=user_text.strip(),
-        max_output_tokens=500,
-        tools=[
-            {
-                "type": "web_search",
-                "search_context_size": "low",
-            }
-        ],
-    )
+    modules = load_modules(_REGISTRY_PATH)
+    all_tools, tool_registry = build_tools(modules)
+    register_memory_tool(all_tools)
+    all_tools.insert(0, {
+        "type": "web_search",
+        "search_context_size": "low",
+    })
 
-    answer = response.output_text
+    turn = _memory.add_user(user_text.strip())
+    conversation = to_api_items(_memory.get_history())
 
-    if not answer:
-        return "Сэр, мне не удалось сформировать ответ. Попробуйте повторить запрос."
+    max_iterations = 5
+    output_text = ""
+    action_done = False
+    memory_calls = 0
 
-    print("Ответ J.A.R.V.I.S.:", answer)
-    return answer
+    for iteration in range(max_iterations):
+        try:
+            response = client.responses.create(
+                model=f"gpt://{YANDEX_CLOUD_FOLDER}/{YANDEX_CLOUD_MODEL}",
+                temperature=0.3,
+                instructions=build_instructions(_memory),
+                input=conversation,
+                max_output_tokens=1500,
+                tools=all_tools,
+            )
+        except Exception as e:
+            _memory.add_assistant("Сэр, произошла ошибка при обращении к модели.", turn)
+            print("API error:", str(e))
+            raise
+
+        output_text = getattr(response, "output_text", "")
+
+        if hasattr(response, "output") and response.output:
+            calls = [
+                item for item in (getattr(response, "output", None) or [])
+                if getattr(item, "type", None) == "function_call"
+            ]
+
+            if calls:
+                if output_text:
+                    conversation.append({"role": "assistant", "content": output_text})
+                for item in calls:
+                    call_id = getattr(item, "call_id", "")
+                    name = getattr(item, "name", "")
+                    arguments_str = getattr(item, "arguments", "")
+
+                    try:
+                        arguments_dict = json.loads(arguments_str or "{}")
+                    except (json.JSONDecodeError, TypeError):
+                        arguments_dict = {}
+
+                    if name == MEMORY_TOOL_NAME:
+                        if memory_calls >= MAX_MEMORY_CALLS:
+                            result = "Отклонено: слишком много фактов за один ответ."
+                        else:
+                            memory_calls += 1
+                            try:
+                                result = _remember_fact(**arguments_dict)
+                            except TypeError as exc:
+                                result = "Ошибка вызова remember_fact: {0}".format(exc)
+                    elif action_done:
+                        result = "Отклонено: за один ответ разрешён только один инструмент."
+                    else:
+                        try:
+                            result = execute_tool_call(name, arguments_dict, tool_registry)
+                        except Exception as exc:
+                            result = "Ошибка выполнения '{0}': {1}".format(name, exc)
+                        action_done = True
+
+                    result = str(result)
+                    if not result.startswith("Отклонено"):
+                        _memory.add_tool(name, result, turn)
+
+                    conversation.append(item.model_dump(exclude_none=True))
+                    conversation.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": result,
+                    })
+
+                continue
+
+        if not output_text:
+            fallback = "Сэр, мне не удалось сформировать ответ. Попробуйте повторить запрос."
+            _memory.add_assistant(fallback, turn)
+            return fallback
+
+        _memory.add_assistant(output_text, turn)
+
+        print("Ответ J.A.R.V.I.S.:", output_text)
+        return output_text
+
+    if output_text:
+        _memory.add_assistant(output_text, turn)
+        return output_text
+
+    fallback = "Сэр, не удалось завершить обработку запроса."
+    _memory.add_assistant(fallback, turn)
+    return fallback
 
 
 if __name__ == "__main__":
-    user_text = "Узнай официальный курс доллара США к российскому рублю на сегодня по данным Банка России. " \
-                "Назови курс, дату его действия и укажи, что это официальный курс ЦБ."
+    user_text = ("Узнай официальный курс доллара США к российскому рублю на сегодня по данным Банка России. "
+                 "Назови курс, дату его действия и укажи, что это официальный курс ЦБ.")
     print(ask_jarvis(user_text))
