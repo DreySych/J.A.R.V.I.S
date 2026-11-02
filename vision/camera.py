@@ -6,6 +6,11 @@ import subprocess
 import signal
 import json
 import wave
+import threading
+import socket
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 
 from flask import Flask, request, jsonify, send_file
 from picamera2 import Picamera2
@@ -13,6 +18,15 @@ from picamera2.encoders import H264Encoder
 from picamera2.outputs import FileOutput
 from libcamera import Transform
 from gpiozero import LED
+
+
+# Полный URL обработчика регистрации центрального мозга.
+# Когда товарищ даст адрес, впиши его сюда, например:
+# CENTRAL_REGISTRATION_URL = "http://192.168.1.50:5000/add_module"
+# Пустая строка означает, что регистрация пока не настроена.
+CENTRAL_REGISTRATION_URL = ""
+CAMERA_PORT = 5000
+MODULE_ID = "camera-01"
 
 
 # Сервер и папки с файлами рядом с camera.py.
@@ -45,8 +59,178 @@ MICROPHONE_CHANNEL = 0
 # Одинаковая частота для камеры, кодировщика и временных меток MP4.
 VIDEO_FPS = 30
 
-# Постоянный идентификатор для центрального мозга.
-MODULE_ID = "camera-01"
+
+def get_module_info(endpoint):
+    # optional, timeout и binary используются загрузчиком тулов мозга.
+    return dict(
+        module_id=MODULE_ID,
+        description=(
+            "Модуль камеры Raspberry Pi. Снимает зеркальные JPG-фото и MP4-видео, "
+            "поддерживает запись звука с INMP441, получение и удаление контента. "
+            "Во время записи видео горит внешний светодиод на GPIO17. "
+            "Фото и видео хранятся в файлах, сведения о них — в SQLite. "
+            "Параметры тулов передаются в JSON body. "
+            "Тип контента: photo или video. Повтор названия внутри типа возвращает 409."
+        ),
+        endpoint=endpoint.rstrip("/"),
+        tools=[
+            {
+                "name": "capture_photo",
+                "description": (
+                    "Делает фото. Если пользователь не указал имя, вызывай без name. "
+                    "Камера назначает имя сама. Не придумывай имя."
+                ),
+                "optional": ["name"],
+                "method": "POST",
+                "path": "/capture_photo",
+                "parameters": {"name": "string"}
+            },
+            {
+                "name": "start_video",
+                "description": (
+                    "Начинает запись зеркального MP4-видео со звуком INMP441. "
+                    "Запись идёт до вызова stop_video. Название здесь не передаётся. "
+                    "Возвращает JSON с result=success и status=recording."
+                ),
+                "method": "POST",
+                "path": "/start_video",
+                "parameters": {}
+            },
+            {
+                "name": "video_status",
+                "description": (
+                    "Возвращает JSON со статусом записи: recording или stopped. "
+                    "При recording горит внешний светодиод, при stopped он выключен."
+                ),
+                "method": "GET",
+                "path": "/video_status",
+                "parameters": {}
+            },
+            {
+                "name": "stop_video",
+                "description": (
+                    "Останавливает текущую запись и сохраняет её в видеофайл. "
+                    "name — желаемое имя записи; если не указан, сервер назначит его сам. "
+                    "Возвращает JSON с result=success и name. Код 409 означает, что имя занято: "
+                    "повтори вызов без name, а не с другим придуманным именем."
+                ),
+                "optional": ["name"],
+                "method": "POST",
+                "path": "/stop_video",
+                "timeout": 60,
+                "parameters": {"name": "string"}
+            },
+            {
+                "name": "get_media",
+                "description": (
+                    "Скачивает запись с камеры и сохраняет файл на диск этого компьютера. "
+                    "Никуда не отправляет. Возвращает путь к сохранённому файлу."
+                ),
+                "method": "POST",
+                "path": "/get_media/",
+                "binary": True,
+                "ext": "mp4",
+                "timeout": 60,
+                "parameters": {"name": "string", "type": "string"}
+            },
+            {
+                "name": "delete_media",
+                "description": (
+                    "Удаляет файл и запись в БД. type обязателен: photo или video. "
+                    "name необязателен. С непустым name удаляет только указанный контент; "
+                    "если он не найден, возвращает 404. Без name удаляет последний "
+                    "сохранённый файл выбранного типа независимо от названия. "
+                    "Если файлов этого типа нет, возвращает 404. При успехе возвращает "
+                    "JSON с result=success."
+                ),
+                "optional": ["name"],
+                "method": "DELETE",
+                "path": "/delete_media",
+                "parameters": {"type": "string", "name": "string"}
+            },
+            {
+                "name": "list_media",
+                "description": (
+                    "Возвращает обычный текст со списком сохранённого контента: "
+                    "названия, типы и даты сохранения из БД. Последние записи идут первыми."
+                ),
+                "method": "GET",
+                "path": "/list_media",
+                "parameters": {}
+            }
+        ]
+    )
+
+
+def get_camera_endpoint(registration_url):
+    # Выбираем IP интерфейса, через который доступен центральный мозг.
+    # UDP connect здесь не отправляет пакет: он определяет маршрут.
+    address = urlsplit(registration_url)
+    if address.scheme not in ("http", "https") or not address.hostname:
+        raise ValueError("Укажите полный http/https URL регистрации мозга")
+    port = address.port or (443 if address.scheme == "https" else 80)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+        connection.connect((address.hostname, port))
+        camera_ip = connection.getsockname()[0]
+    return f"http://{camera_ip}:{CAMERA_PORT}"
+
+
+def register_module(registration_url=None, camera_endpoint=None,
+                    wait_for_camera=False, attempts=3, retry_delay=5):
+    # При запуске камера сама отправляет описание на известный URL мозга.
+    # Адрес назначения и адрес камеры — разные значения.
+    if registration_url is None:
+        registration_url = CENTRAL_REGISTRATION_URL
+    if not registration_url:
+        print("Регистрация: адрес центрального мозга пока не задан.", flush=True)
+        return False
+
+    if wait_for_camera:
+        for _ in range(40):
+            try:
+                with socket.create_connection(("127.0.0.1", CAMERA_PORT), timeout=1):
+                    break
+            except OSError:
+                sleep(0.5)
+        else:
+            print("Регистрация: сервер камеры не запустился.", flush=True)
+            return False
+
+    for attempt in range(1, attempts + 1):
+        try:
+            endpoint = camera_endpoint or get_camera_endpoint(registration_url)
+            payload = json.dumps(get_module_info(endpoint), ensure_ascii=False).encode("utf-8")
+            request = Request(
+                registration_url,
+                data=payload,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST"
+            )
+            with urlopen(request, timeout=15) as response:
+                status = response.status
+                answer = response.read().decode("utf-8")
+            if not 200 <= status < 300:
+                raise ValueError(f"Сервер мозга вернул HTTP {status}")
+
+            # Кроме HTTP-статуса учитываем явный отказ в JSON-ответе.
+            try:
+                result = json.loads(answer)
+            except ValueError:
+                result = None
+            if isinstance(result, dict):
+                if result.get("success") is False or result.get("result") == "error":
+                    raise ValueError(f"Мозг отклонил регистрацию: {answer}")
+
+            print(f"Регистрация: описание камеры отправлено, получен HTTP {status}.", flush=True)
+            print("Ответ центрального мозга:", answer, flush=True)
+            return True
+        except (URLError, OSError, ValueError) as error:
+            print(f"Регистрация: попытка {attempt}/{attempts}, ошибка: {error}", flush=True)
+            if attempt < attempts:
+                sleep(retry_delay)
+
+    print("Регистрация не подтверждена. Сервер камеры продолжает работать.", flush=True)
+    return False
 
 
 def set_recording_state(active):
@@ -292,101 +476,9 @@ def delete_media_record(row):
 
 @app.route("/module_info/", methods=["GET"])
 def module_info():
-    # Адрес берём из запроса, чтобы не прописывать меняющийся IP вручную.
-    # В parameters оставляем типы как в образце модуля светильника.
-    return jsonify(
-        module_id=MODULE_ID,
-        description=(
-            "Модуль камеры Raspberry Pi. Снимает зеркальные JPG-фото и MP4-видео, "
-            "поддерживает запись звука с INMP441, получение и удаление контента. "
-            "Во время записи видео горит внешний светодиод на GPIO17. "
-            "Фото и видео хранятся в файлах, сведения о них — в SQLite. "
-            "Параметры тулов передаются в JSON body. "
-            "Тип контента: photo или video. Повтор названия внутри типа возвращает 409."
-        ),
-        endpoint=request.host_url.rstrip("/"),
-        tools=[
-            {
-                "name": "capture_photo",
-                "description": (
-                    "Делает и сохраняет JPG-фото. name необязателен: без него "
-                    "назначается photo1, photo2 и далее. Возвращает JSON с result=success "
-                    "и именем. Во время записи видео недоступен (409)."
-                ),
-                "method": "POST",
-                "path": "/capture_photo/",
-                "parameters": {"name": "string"}
-            },
-            {
-                "name": "start_video",
-                "description": (
-                    "Начинает запись зеркального MP4-видео со звуком INMP441. "
-                    "Запись идёт до вызова stop_video. Название здесь не передаётся. "
-                    "Возвращает JSON с result=success и status=recording."
-                ),
-                "method": "POST",
-                "path": "/start_video/",
-                "parameters": {}
-            },
-            {
-                "name": "video_status",
-                "description": (
-                    "Возвращает JSON со статусом записи: recording или stopped. "
-                    "При recording горит внешний светодиод, при stopped он выключен."
-                ),
-                "method": "GET",
-                "path": "/video_status/",
-                "parameters": {}
-            },
-            {
-                "name": "stop_video",
-                "description": (
-                    "Останавливает и сохраняет видео. name необязателен: без него "
-                    "назначается video1, video2 и далее. Возвращает JSON с result=success "
-                    "и именем. После остановки сборка MP4 может занять несколько секунд. "
-                    "При занятом названии запись останавливается, возвращается "
-                    "409; повторите этот тул с другим именем или без имени до перезапуска сервера."
-                ),
-                "method": "POST",
-                "path": "/stop_video/",
-                "parameters": {"name": "string"}
-            },
-            {
-                "name": "get_media",
-                "description": (
-                    "Возвращает сам JPG- или MP4-файл. name и type обязательны. "
-                    "type: photo или video. Если контент не найден, возвращает 404."
-                ),
-                "method": "POST",
-                "path": "/get_media/",
-                "parameters": {"name": "string", "type": "string"}
-            },
-            {
-                "name": "delete_media",
-                "description": (
-                    "Удаляет файл и запись в БД. type обязателен: photo или video. "
-                    "name необязателен. С непустым name удаляет только указанный контент; "
-                    "если он не найден, возвращает 404. Без name удаляет последний "
-                    "сохранённый файл выбранного типа независимо от названия. "
-                    "Если файлов этого типа нет, возвращает 404. При успехе возвращает "
-                    "JSON с result=success."
-                ),
-                "method": "DELETE",
-                "path": "/delete_media/",
-                "parameters": {"type": "string", "name": "string"}
-            },
-            {
-                "name": "list_media",
-                "description": (
-                    "Возвращает обычный текст со списком сохранённого контента: "
-                    "названия, типы и даты сохранения из БД. Последние записи идут первыми."
-                ),
-                "method": "GET",
-                "path": "/list_media/",
-                "parameters": {}
-            }
-        ]
-    )
+    # Информационный эндпоинт остаётся доступен для ручной проверки.
+    # Для автоматической регистрации вызывать его не требуется.
+    return jsonify(get_module_info(request.host_url.rstrip("/")))
 
 
 @app.route("/capture_photo/", methods=["POST"])
@@ -642,10 +734,17 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, stop_server)
     try:
         init_db()
+        # Фоновая функция сама отправляет описание центральному мозгу.
+        # Сначала ждёт готовности сервера камеры к входящим подключениям.
+        threading.Thread(
+            target=register_module,
+            kwargs={"wait_for_camera": True},
+            daemon=True
+        ).start()
         # Один процесс и последовательная обработка запросов:
         # проверка названия и сохранение не мешают друг другу.
         # Запись видео работает отдельно средствами Picamera2.
-        app.run(host="0.0.0.0", port=5000, debug=False, threaded=False)
+        app.run(host="0.0.0.0", port=CAMERA_PORT, debug=False, threaded=False)
     finally:
         try:
             camera.close()
