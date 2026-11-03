@@ -85,7 +85,7 @@ def ask_jarvis(user_text):
         try:
             response = client.responses.create(
                 model=f"gpt://{YANDEX_CLOUD_FOLDER}/{YANDEX_CLOUD_MODEL}",
-                temperature=0.3,
+                temperature=0.4,
                 instructions=build_instructions(_memory),
                 input=conversation,
                 max_output_tokens=1500,

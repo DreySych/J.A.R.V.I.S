@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NCS Visualizer (NCS4JS)</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      color: #fff;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    /* Канвас на весь экран */
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 80vh;
+    }
+    /* Панель управления снизу */
+    .controls {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: min(90vw, 580px);
+      z-index: 10;
+    }
+    button, .file-button {
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      background: rgba(10, 10, 15, 0.8);
+      color: #fff;
+      padding: 10px 18px;
+      font-size: 14px;
+      cursor: pointer;
+      backdrop-filter: blur(10px);
+      transition: 0.2s;
+    }
+    button:hover, .file-button:hover {
+      background: rgba(40, 40, 50, 0.9);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+    input[type="file"] { display: none; }
+    #status {
+      width: 100%;
+      text-align: center;
+      color: #555;
+      font-size: 12px;
+      letter-spacing: 0.5px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Канвас для визуализатора -->
+  <canvas id="c"></canvas>
+
+  <!-- Элементы управления -->
+  <div class="controls">
+    <label class="file-button">
+      Выбрать аудио
+      <input id="fileInput" type="file" accept="audio/*">
+    </label>
+    <button id="playPauseBtn">Пауза / продолжить</button>
+    <span id="status">Demo режим (синтетический бас)</span>
+  </div>
+
+  <!-- Подключаем библиотеку как ES-модуль -->
+  <script type="module">
+    // ВАЖНО: Убедитесь, что файл ncs-visualizer.js лежит в той же папке!
+    import { NCSVisualizer } from './ncs-visualizer.js';
+
+    const canvas = document.getElementById('c');
+    const fileInput = document.getElementById('fileInput');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const statusEl = document.getElementById('status');
+
+    // 1. Инициализация визуализатора
+    // dotCount: 322 (по умолчанию) создает очень плотную сетку.
+    // Можно увеличить до 400-500 для еще большей детализации, но это нагрузка на GPU.
+    const viz = new NCSVisualizer(canvas, {
+      dotCount: 350,
+      color: [0.584, 0.439, 1.0]
+    });
+
+    // Запускаем цикл рендеринга (сначала в демо-режиме)
+    viz.start();
+
+    // 2. Обработка загрузки файла
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      try {
+        // Загружаем аудио в визуализатор
+        viz.loadAudio(file);
+        // Запускаем воспроизведение
+        viz.play();
+
+        statusEl.textContent = "▶ " + file.name.replace(/\.[^/.]+$/, "");
+        playPauseBtn.textContent = "Пауза";
+      } catch (error) {
+        console.error(error);
+        statusEl.textContent = "Ошибка загрузки аудио";
+      }
+    });
+
+    // 3. Обработка кнопки паузы/воспроизведения
+    playPauseBtn.addEventListener('click', () => {
+      if (!viz.hasAudio) {
+        statusEl.textContent = "Сначала выберите аудиофайл";
+        return;
+      }
+
+      // Метод togglePlay() из библиотеки
+      viz.togglePlay();
+
+      // Обновляем текст на кнопке
+      if (viz.isPlaying) {
+        playPauseBtn.textContent = "Пауза";
+      } else {
+        playPauseBtn.textContent = "Продолжить";
+      }
+    });
+
+    // (Опционально) Изменение цвета при клике на пустое место
+    // Можно раскомментировать, чтобы посмотреть, как библиотека меняет цвета
+
+    canvas.addEventListener('click', () => {
+      const randomColor = NCSVisualizer.randomColor();
+      viz.setColor(randomColor[0], randomColor[1], randomColor[2]);
+    });
+
+  </script>
+</body>
+</html>

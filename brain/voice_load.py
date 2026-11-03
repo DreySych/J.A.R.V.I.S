@@ -16,7 +16,7 @@ tts_model.to(device)
 def synthesize_wav_silero(text, out_path):
     audio = tts_model.apply_tts(
         text=text,
-        speaker="eugene",
+        speaker="aidar",
         sample_rate=48000,
     )
 

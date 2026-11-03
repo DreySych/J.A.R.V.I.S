@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 _MEMORY_FILE = Path(__file__).parent / "memory.json"
-_MAX_TURNS = 8
+_MAX_TURNS = 15
 
 
 class MemoryManager:

@@ -20,16 +20,8 @@ RESPONSE_PATH = Path(__file__).parent / "audio" / "response.wav"
 def test_endpoint():
     return jsonify({
         "status": "ok",
-        "message": "J.A.R.V.I.S. is ready for work"
+        "message": "J.A.R.V.I.S. готов к работе"
     })
-
-
-@app.route("/audio/<filename>", methods=["GET"])
-def get_audio(filename):
-    path = AUDIO_DIR / filename
-    if not path.exists():
-        return "Not found", 404
-    return send_file(path, mimetype="audio/wav")
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -40,14 +32,14 @@ def chat():
     if not user_text.strip():
         return jsonify({
             "success": False,
-            "error": "Empty request"
+            "error": "Пустой запрос"
         }), 400
 
     try:
         response_text = ask_jarvis(user_text)
         normalized_text = normalize_for_tts(response_text)
 
-        synthesize_wav_piper(normalized_text, str(RESPONSE_PATH))
+        synthesize_wav_silero(normalized_text, str(RESPONSE_PATH))
 
         return send_file(
             RESPONSE_PATH,
@@ -59,7 +51,7 @@ def chat():
 
         return jsonify({
             "success": False,
-            "error": "Something went wrong"
+            "error": "Что-то пошло не так"
         }), 500
 
 
@@ -91,5 +83,5 @@ def add_module():
 
 
 if __name__ == "__main__":
-    print("Initializing J.A.R.V.I.S. systems...")
+    print("Запуск Системы J.A.R.V.I.S...")
     app.run(host="0.0.0.0", port=5000, debug=True)

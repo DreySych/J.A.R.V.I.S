@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import zipfile
 import requests
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -40,3 +40,26 @@ def download_model(filename, url):
 if __name__ == "__main__":
     for filename, url in FILES.items():
         download_model(filename, url)
+
+    vosk_dir = BASE_DIR / "models" / "vosk"
+    model_name = "vosk-model-small-ru-0.22"
+
+    if not (vosk_dir / model_name).exists():
+        vosk_dir.mkdir(parents=True, exist_ok=True)
+        archive_path = vosk_dir / f"{model_name}.zip"
+
+        print("Скачиваю Vosk...")
+        response = requests.get(
+            f"https://alphacephei.com/vosk/models/{model_name}.zip",
+            timeout=120,
+        )
+        response.raise_for_status()
+        archive_path.write_bytes(response.content)
+
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(vosk_dir)
+
+        archive_path.unlink()
+        print("Vosk готов!")
+    else:
+        print("Vosk уже скачан")
