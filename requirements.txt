@@ -20,7 +20,11 @@ python-dotenv
 numpy
 omegaconf
 soundfile
+sounddevice
 scipy
+
+# Окно визуализатора
+pywebview
 
 # Синтез речи
 torch

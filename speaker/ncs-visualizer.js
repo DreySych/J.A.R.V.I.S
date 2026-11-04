@@ -276,6 +276,12 @@ export class NCSVisualizer {
     if (c.length === 3) {
       this.options.color = [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5];
     }
+    this._smoothAmp = 0;
+    this._smoothBass = 0;
+    this.pulsationStrength = 1.0;
+    this.isListening = false;
+    this._listeningScale = 1.0;
+    this._targetListeningScale = 1.0;
     this.audioCtx = null;
     this.sourceNode = null;
     this.analyserNode = null;
@@ -322,6 +328,15 @@ export class NCSVisualizer {
     } else if (args.length === 6) {
       this.options.color = args;
     }
+  }
+
+  setListening(enabled) {
+    this.isListening = enabled;
+    this._targetListeningScale = enabled ? 1.3 : 1.0;
+  }
+
+  setPulsationStrength(value) {
+    this.pulsationStrength = Math.max(0.0, value);
   }
 
   setAudioNodes(audioCtx, analyserNode, audioElement, seed) {
@@ -523,6 +538,30 @@ export class NCSVisualizer {
     this._freqData = new Uint8Array(this.analyserNode.frequencyBinCount);
   }
 
+  playFromUrl(url) {
+    if (this.audioElement) {
+      this.audioElement.pause();
+      this.audioElement = null;
+    }
+    if (!this.audioCtx) this.audioCtx = new AudioContext();
+
+    this.audioElement = new Audio(url);
+    this.sourceNode = this.audioCtx.createMediaElementSource(this.audioElement);
+    this.analyserNode = this.audioCtx.createAnalyser();
+    this.analyserNode.fftSize = 2048;
+    this.analyserNode.smoothingTimeConstant = 0.85;
+
+    this.sourceNode.connect(this.analyserNode);
+    this.analyserNode.connect(this.audioCtx.destination);
+
+    this.audioElement.addEventListener('ended', () => { this.isPlaying = false; });
+    this.isPlaying = true;
+    this._freqData = new Uint8Array(this.analyserNode.frequencyBinCount);
+
+    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+    this.audioElement.play();
+  }
+
   play() {
     if (!this.audioElement) return;
     if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
@@ -550,37 +589,40 @@ export class NCSVisualizer {
     window.removeEventListener('resize', this._onResize);
   }
 
-  _getBassAmplitude() {
-    if (!this.analyserNode) {
-      this._demoTime += 0.016;
-      const demo = 0.15 + 0.1 * Math.sin(this._demoTime * 2) + 0.05 * Math.sin(this._demoTime * 5);
-      return Math.min(1, demo * 1.5);
+    _getBassAmplitude() {
+      if (!this.analyserNode || !this.isPlaying) {
+        this._demoTime += 0.016;
+        const wave1 = Math.sin(this._demoTime * 1.5) * 0.09;
+        const wave2 = Math.sin(this._demoTime * 0.8) * 0.06;
+        const wave3 = Math.sin(this._demoTime * 0.3) * 0.035;
+        const demo = 0.15 + wave1 + wave2 + wave3;
+        return Math.max(0.05, demo);
+      }
+      const binCount = this.analyserNode.frequencyBinCount;
+      if (!this._freqData || this._freqData.length !== binCount) {
+        this._freqData = new Uint8Array(binCount);
+      }
+      this.analyserNode.getByteFrequencyData(this._freqData);
+      const bins = binCount;
+      const binHz = this.audioCtx.sampleRate / this.analyserNode.fftSize;
+      const lo = Math.floor(20 / binHz);
+      const hi = Math.min(bins - 1, Math.ceil(150 / binHz));
+      let sumSq = 0, weightSum = 0;
+      for (let i = lo; i <= hi; i++) {
+        const hz = i * binHz;
+        const v = this._freqData[i] / 255;
+        const dist = hz - 70;
+        const weight = Math.exp(-(dist * dist) / (2 * 40 * 40));
+        sumSq += v * v * weight;
+        weightSum += weight;
+      }
+      const bassRMS = weightSum > 0 ? Math.sqrt(sumSq / weightSum) : 0;
+      this._smoothBass += (bassRMS - this._smoothBass) * 0.06;
+      const delta = Math.max(0, bassRMS - this._smoothBass);
+      const base = bassRMS * 0.75 + 0.1;
+      const boost = delta * 5.0;
+      return Math.min(1, base + boost);
     }
-    const binCount = this.analyserNode.frequencyBinCount;
-    if (!this._freqData || this._freqData.length !== binCount) {
-      this._freqData = new Uint8Array(binCount);
-    }
-    this.analyserNode.getByteFrequencyData(this._freqData);
-    const bins = binCount;
-    const binHz = this.audioCtx.sampleRate / this.analyserNode.fftSize;
-    const lo = Math.floor(20 / binHz);
-    const hi = Math.min(bins - 1, Math.ceil(150 / binHz));
-    let sumSq = 0, weightSum = 0;
-    for (let i = lo; i <= hi; i++) {
-      const hz = i * binHz;
-      const v = this._freqData[i] / 255;
-      const dist = hz - 70;
-      const weight = Math.exp(-(dist * dist) / (2 * 40 * 40));
-      sumSq += v * v * weight;
-      weightSum += weight;
-    }
-    const bassRMS = weightSum > 0 ? Math.sqrt(sumSq / weightSum) : 0;
-    this._smoothBass += (bassRMS - this._smoothBass) * 0.06;
-    const delta = Math.max(0, bassRMS - this._smoothBass);
-    const base = bassRMS * 0.75 + 0.1;
-    const boost = delta * 5.0;
-    return Math.min(1, base + boost);
-  }
 
   _drawQuad(loc) {
     const gl = this.gl;
@@ -614,13 +656,19 @@ export class NCSVisualizer {
     this._smoothAmp += this._ampVelocity * clampedDt;
     this._smoothAmp = Math.max(0.0, this._smoothAmp);
 
-    const uAmplitude = this._smoothAmp;
+    const uAmplitude = this._smoothAmp * this.pulsationStrength;
     this._amplitudeIntegral += uAmplitude * dt * 3;
     const uNoiseOffset = (0.5 * progress + this._amplitudeIntegral) * 0.75;
-
-    const uDotRadius = 0.9 / dotCount;
+    this._listeningScale += (this._targetListeningScale - this._listeningScale) * 0.05;
+    let ampReaction = this.isListening ? 0.05 : 0.2;
+    let currentRadius = 0.6 + uAmplitude * ampReaction;
+    currentRadius *= this._listeningScale;
+    if (this.isListening) {
+      currentRadius += Math.sin(time * 0.002) * 0.01;
+    }
+    const uSphereRadius = currentRadius;
+    const uDotRadius = (0.9 / dotCount) * this._listeningScale;
     const uDotRadiusPX = uDotRadius * 0.5 * size;
-    const uSphereRadius = 0.675 + uAmplitude * 0.225;
     const amp3 = uAmplitude + 3;
     const uFeather = amp3 * amp3 * (45 / 1568);
 
