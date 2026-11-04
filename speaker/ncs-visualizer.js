@@ -202,6 +202,7 @@ const FINAL_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uBlurredTexture;
 uniform sampler2D uOriginalTexture;
+uniform float uSeparateGlow;
 in vec2 fragUV;
 in vec3 fragColor1;
 in vec3 fragColor2;
@@ -210,32 +211,26 @@ in float fragTime;
 out vec4 outColor;
 
 void main() {
-  float value = max(texture(uBlurredTexture, fragUV).r, texture(uOriginalTexture, fragUV).r);
+  float orig = texture(uOriginalTexture, fragUV).r; 
+  float blur = texture(uBlurredTexture, fragUV).r;  
+  float expandedBlur = pow(blur, 0.65);
+  float value = max(orig, expandedBlur);
   if (value < 0.01) { outColor = vec4(0.0); return; }
-
   vec2 toCenter = fragUV - vec2(0.5);
   float angle = atan(toCenter.y, toCenter.x);
-
-  // 1. Вращающийся градиент
   float sweep = sin(angle + fragTime * 1.0) * 0.5 + 0.5;
-  
-  // 2. Плотность
   float density = smoothstep(0.2, 0.9, value);
-  
-  // Смешиваем. Ограничиваем (0.2 - 0.8), чтобы цвета не перекрывали друг друга на 100%
   float mixFactor = clamp(sweep * 0.6 + density * 0.4, 0.2, 0.8);
-
-  // 3. Смешиваем цвета
-  vec3 color = mix(fragColor1, fragColor2, mixFactor);
-
-  // 4. Бас дает пульсацию (всего 0.3, чтобы не выжигать в белый)
-  color *= (1.0 + fragBass * 0.3);
-
-  // 5. Убираем сильный белый засвет (теперь только на самых-самых пиках)
-  float specular = smoothstep(0.95, 1.0, value) * 0.15;
+  vec3 standardColor = mix(fragColor1, fragColor2, mixFactor);
+  float coreMask = smoothstep(0.4, 0.8, orig); 
+  vec3 glowColor = fragColor2 * 1.3; 
+  vec3 splitColor = mix(glowColor, fragColor1, coreMask);
+  vec3 color = mix(standardColor, splitColor, uSeparateGlow);
+  color *= (1.0 + fragBass * 0.15);
+  float specular = smoothstep(0.95, 1.0, value) * 0.1 * (1.0 - uSeparateGlow);
   color = mix(color, vec3(1.0), specular);
-
-  outColor = vec4(color * value, value);
+  float dimmer = 0.85;
+  outColor = vec4(color * value * dimmer, value * dimmer);
 }`;
 
 export function hashString(s) {
@@ -262,8 +257,8 @@ export class NCSVisualizer {
       // futureHouse:    [0.443, 0.165, 0.961,   0.6,   0.25,  0.95 ],
       // futureBass:     [0.584, 0.439, 1.0,     0.75,  0.65,  1.0  ],
       drumAndBass:    [1.0,   0.196, 0.969,   0.75,  0.05,  0.65 ],
-      witchHouse:     [1.0,  1.0,   1.0,      0.9,   0.5,   0.7  ],
-      electronic:     [1.0,   1.0,   1.0,     0.75,  0.85,  1.0  ],
+      angelcore:      [1.0,   1.0,   1.0,     1.0,   0.6,   0.85 ],
+      electronic:     [1.0,   1.0,   1.0,     0.85,  0.85,  0.85 ],
       miscellaneous:  [0.0,   0.0,   0.0,     0.15,  0.15,  0.15 ],
     };
 
@@ -271,7 +266,7 @@ export class NCSVisualizer {
 
   constructor(canvas, options = {}) {
     this.canvas = canvas;
-    this.options = { dotCount: 322, color: [1.0,   1.0,   1.0,     0.75,  0.85,  1.0  ], ...options };
+    this.options = { dotCount: 322, color: [1.0,   1.0,   1.0,     0.85,  0.85,  0.85 ], ...options };
     const c = this.options.color;
     if (c.length === 3) {
       this.options.color = [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5];
@@ -303,6 +298,7 @@ export class NCSVisualizer {
     this._targetColor = [...this.options.color];
     this.rainbowMode = false;
     this._rainbowHue = 0;
+    this._separateGlow = 0.0;
     this._initGL();
     this._initFBOs();
     this._onResize = () => this._resize();
@@ -332,6 +328,14 @@ export class NCSVisualizer {
     }
     if (newColor) {
       this._targetColor = [...newColor];
+      const keys = Object.keys(NCSVisualizer.NCS_GENRE_COLORS);
+      const angelcoreIndex = keys.indexOf('angelcore');
+      let isAngelcore = (NCSVisualizer.i === angelcoreIndex);
+      if (!isAngelcore) {
+        const ac = NCSVisualizer.NCS_GENRE_COLORS.angelcore;
+        isAngelcore = newColor.every((val, idx) => Math.abs(val - ac[idx]) < 0.01);
+      }
+      this._separateGlow = isAngelcore ? 1.0 : 0.0;
     }
   }
 
@@ -448,6 +452,7 @@ export class NCSVisualizer {
     this._u.uOutputColor2 = U(f, 'uOutputColor2');
     this._u.uBass = U(f, 'uBass');
     this._u.uTime = U(f, 'uTime');
+    this._u.uSeparateGlow = U(f, 'uSeparateGlow');
     this._u.uBlurredTex = U(f, 'uBlurredTexture');
     this._u.uOriginalTex = U(f, 'uOriginalTexture');
 
@@ -776,6 +781,7 @@ export class NCSVisualizer {
     }
     gl.uniform3f(u.uOutputColor1, this._currentColor[0], this._currentColor[1], this._currentColor[2]);
     gl.uniform3f(u.uOutputColor2, this._currentColor[3], this._currentColor[4], this._currentColor[5]);
+    gl.uniform1f(u.uSeparateGlow, this._separateGlow);
     gl.uniform1f(u.uTime, time * 0.001);
     gl.uniform1i(u.uBlurredTex, 0);
     gl.uniform1i(u.uOriginalTex, 1);

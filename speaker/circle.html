@@ -6,18 +6,23 @@
   <title>NCS Visualizer</title>
   <style>
     * { box-sizing: border-box; }
-     body {
-       margin: 0;
-       overflow: hidden;
-       color: #fff;
-       font-family: 'Segoe UI', system-ui, sans-serif;
-
-       background-image: url("сolors.jpg");
-       background-size: cover;
-       background-position: center;
-       background-repeat: no-repeat;
-       background-attachment: fixed; 
-     }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #050505;
+      color: #fff;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+    #bg-layer {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      opacity: 1;
+      transition: opacity 1.5s ease-in-out;
+    }
     canvas {
       display: block;
       width: 100vw;
@@ -63,6 +68,8 @@
   </style>
 </head>
 <body>
+
+  <div id="bg-layer"></div>
 
   <canvas id="c"></canvas>
 
@@ -152,6 +159,40 @@
 
     window.screenGlow = function (enabled) {
         viz.setListening(enabled);
+    };
+
+    window.changeBackground = function(source, isColor = false) {
+      const newBg = document.createElement('div');
+      newBg.id = 'bg-layer-new';
+      newBg.style.cssText = `
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background-size: cover;
+        background-position: center;
+        opacity: 0;
+        transition: opacity 1.5s ease-in-out;
+      `;
+
+      if (isColor) {
+        newBg.style.backgroundColor = source;
+      } else {
+        newBg.style.backgroundImage = `url('${source}')`;
+      }
+
+      document.body.appendChild(newBg);
+
+      void newBg.offsetWidth;
+
+      newBg.style.opacity = '1';
+
+      const oldBg = document.getElementById('bg-layer');
+      if (oldBg) {
+        oldBg.style.opacity = '0';
+        setTimeout(() => oldBg.remove(), 1500);
+      }
+
+      setTimeout(() => { newBg.id = 'bg-layer'; }, 100);
     };
 
   </script>
