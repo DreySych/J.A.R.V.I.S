@@ -89,7 +89,6 @@
     // Можно увеличить до 400-500 для еще большей детализации, но это нагрузка на GPU.
     const viz = new NCSVisualizer(canvas, {
       dotCount: 350,
-      color: [0.584, 0.439, 1.0]
     });
 
     // Запускаем цикл рендеринга (сначала в демо-режиме)
@@ -136,8 +135,8 @@
     // Можно раскомментировать, чтобы посмотреть, как библиотека меняет цвета
 
     canvas.addEventListener('click', () => {
-      const randomColor = NCSVisualizer.randomColor();
-      viz.setColor(randomColor[0], randomColor[1], randomColor[2]);
+      const newcolor = NCSVisualizer.newColor();
+      viz.setColor(newcolor[0], newcolor[1], newcolor[2], newcolor[3], newcolor[4], newcolor[5]);
     });
 
   </script>

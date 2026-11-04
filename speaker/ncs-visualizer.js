@@ -6,6 +6,7 @@ void main() {
   gl_Position = vec4(inPosition, 0.0, 1.0);
   fragUV = (inPosition + 1.0) / 2.0;
 }`;
+
 const PARTICLE_FS = `#version 300 es
 precision highp float;
 uniform float uNoiseOffset;
@@ -43,15 +44,9 @@ const float GRADIENTS_3D[] = float[](
   1., 1., 0., 0., -1., 1., 0., 0.,  1.,-1., 0., 0., -1.,-1., 0., 0.,
   1., 1., 0., 0.,  0.,-1., 1., 0., -1., 1., 0., 0.,  0.,-1.,-1., 0.
 );
-float smootherStep(float t) {
-  return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
-}
-vec3 smootherStep(vec3 coord) {
-  return vec3(smootherStep(coord.x), smootherStep(coord.y), smootherStep(coord.z));
-}
-int hash(int seed, ivec3 primed) {
-  return (seed ^ primed.x ^ primed.y ^ primed.z) * 0x27d4eb2d;
-}
+float smootherStep(float t) { return t * t * t * (t * (t * 6.0 - 15.0) + 10.0); }
+vec3 smootherStep(vec3 coord) { return vec3(smootherStep(coord.x), smootherStep(coord.y), smootherStep(coord.z)); }
+int hash(int seed, ivec3 primed) { return (seed ^ primed.x ^ primed.y ^ primed.z) * 0x27d4eb2d; }
 float gradCoord(int seed, ivec3 primed, vec3 d) {
   int h = hash(seed, primed);
   h ^= h >> 15;
@@ -65,10 +60,10 @@ float perlinSingle(int seed, vec3 coord) {
   vec3 s = smootherStep(d0);
   coord0 *= PRIMES;
   ivec3 coord1 = coord0 + PRIMES;
-  float xf00 = mix(gradCoord(seed,                              coord0,                     d0), gradCoord(seed,          ivec3(coord1.x, coord0.yz),      vec3(d1.x, d0.yz)), s.x);
-  float xf10 = mix(gradCoord(seed, ivec3(coord0.x, coord1.y, coord0.z), vec3(d0.x, d1.y, d0.z)), gradCoord(seed,          ivec3(coord1.xy, coord0.z),      vec3(d1.xy, d0.z)), s.x);
-  float xf01 = mix(gradCoord(seed,          ivec3(coord0.xy, coord1.z),      vec3(d0.xy, d1.z)), gradCoord(seed, ivec3(coord1.x, coord0.y, coord1.z), vec3(d1.x, d0.y, d1.z)), s.x);
-  float xf11 = mix(gradCoord(seed,          ivec3(coord0.x, coord1.yz),      vec3(d0.x, d1.yz)), gradCoord(seed,                              coord1,                     d1), s.x);
+  float xf00 = mix(gradCoord(seed, coord0, d0), gradCoord(seed, ivec3(coord1.x, coord0.yz), vec3(d1.x, d0.yz)), s.x);
+  float xf10 = mix(gradCoord(seed, ivec3(coord0.x, coord1.y, coord0.z), vec3(d0.x, d1.y, d0.z)), gradCoord(seed, ivec3(coord1.xy, coord0.z), vec3(d1.xy, d0.z)), s.x);
+  float xf01 = mix(gradCoord(seed, ivec3(coord0.xy, coord1.z), vec3(d0.xy, d1.z)), gradCoord(seed, ivec3(coord1.x, coord0.y, coord1.z), vec3(d1.x, d0.y, d1.z)), s.x);
+  float xf11 = mix(gradCoord(seed, ivec3(coord0.x, coord1.yz), vec3(d0.x, d1.yz)), gradCoord(seed, coord1, d1), s.x);
   float yf0 = mix(xf00, xf10, s.y);
   float yf1 = mix(xf01, xf11, s.y);
   return mix(yf0, yf1, s.z) * 0.964921414852142333984375;
@@ -81,19 +76,24 @@ float fractalNoise(vec3 coord) {
 void main() {
   float noise = fractalNoise(vec3(fragUV * uNoiseFrequency, uNoiseOffset)) * uNoiseAmplitude;
   vec3 dotCenter = vec3(fragUV * uDotSpacing + uDotOffset + noise, (noise + 0.5 * uNoiseAmplitude) * uAmplitude * 0.4);
+  
   float radialDist = length(dotCenter.xy);
   float push = 1.0 + uCenterPush * max(0.0, 1.0 - radialDist / 0.8);
   dotCenter.xy *= push;
+  
   float distanceFromCenter = length(dotCenter);
   dotCenter /= distanceFromCenter;
   distanceFromCenter = min(uSphereRadius, distanceFromCenter);
   dotCenter *= distanceFromCenter;
+  
   float featherRadius = uSphereRadius - uFeather;
   float featherStrength = 1.0 - clamp((distanceFromCenter - featherRadius) / uFeather, 0.0, 1.0);
   dotCenter *= featherStrength * (uSphereRadius / distanceFromCenter - 1.0) + 1.0;
+  
   dotCenter.y *= -1.0;
   outColor = dotCenter.xy;
 }`;
+
 const DOT_VS = `#version 300 es
 uniform int uDotCount;
 uniform float uDotRadius;
@@ -118,6 +118,7 @@ void main() {
   fragUV = inPosition;
   fragDotRadiusPX = uDotRadiusPX + 1.0;
 }`;
+
 const DOT_FS = `#version 300 es
 precision highp float;
 in vec2 fragUV;
@@ -128,6 +129,7 @@ void main() {
   float t = clamp((1.0 - length(fragUV)) * fragDotRadiusPX, 0.0, 1.0);
   outColor = t * fragAlpha;
 }`;
+
 const BLUR_VS = `#version 300 es
 uniform float uBlurRadius;
 uniform vec2 uBlurDirection;
@@ -153,6 +155,7 @@ void main() {
   fragUV = (inPosition + 1.0) / 2.0;
   fragBlurDirection = uBlurDirection;
 }`;
+
 const BLUR_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uInputTexture;
@@ -174,27 +177,67 @@ void main() {
     outColor += coefficientSum * (texture(uInputTexture, fragUV + offset).r + texture(uInputTexture, fragUV - offset).r);
   }
 }`;
+
 const FINAL_VS = `#version 300 es
-uniform vec3 uOutputColor;
+uniform vec3 uOutputColor1;
+uniform vec3 uOutputColor2;
+uniform float uBass;
+uniform float uTime;
 in vec2 inPosition;
 out vec2 fragUV;
-out vec3 fragOutputColor;
+out vec3 fragColor1;
+out vec3 fragColor2;
+out float fragBass;
+out float fragTime;
 void main() {
   gl_Position = vec4(inPosition, 0.0, 1.0);
   fragUV = (inPosition + 1.0) / 2.0;
-  fragOutputColor = uOutputColor;
+  fragColor1 = uOutputColor1;
+  fragColor2 = uOutputColor2;
+  fragBass = uBass;
+  fragTime = uTime;
 }`;
+
 const FINAL_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uBlurredTexture;
 uniform sampler2D uOriginalTexture;
 in vec2 fragUV;
-in vec3 fragOutputColor;
+in vec3 fragColor1;
+in vec3 fragColor2;
+in float fragBass;
+in float fragTime;
 out vec4 outColor;
+
 void main() {
   float value = max(texture(uBlurredTexture, fragUV).r, texture(uOriginalTexture, fragUV).r);
-  outColor = vec4(fragOutputColor * value, value);
+  if (value < 0.01) { outColor = vec4(0.0); return; }
+
+  vec2 toCenter = fragUV - vec2(0.5);
+  float angle = atan(toCenter.y, toCenter.x);
+
+  // 1. Вращающийся градиент
+  float sweep = sin(angle + fragTime * 1.0) * 0.5 + 0.5;
+  
+  // 2. Плотность
+  float density = smoothstep(0.2, 0.9, value);
+  
+  // Смешиваем. Ограничиваем (0.2 - 0.8), чтобы цвета не перекрывали друг друга на 100%
+  float mixFactor = clamp(sweep * 0.6 + density * 0.4, 0.2, 0.8);
+
+  // 3. Смешиваем цвета
+  vec3 color = mix(fragColor1, fragColor2, mixFactor);
+
+  // 4. Бас дает пульсацию (всего 0.3, чтобы не выжигать в белый)
+  color *= (1.0 + fragBass * 0.3);
+
+  // 5. Убираем сильный белый засвет (теперь только на самых-самых пиках)
+  float specular = smoothstep(0.95, 1.0, value) * 0.15;
+  color = mix(color, vec3(1.0), specular);
+
+  outColor = vec4(color * value, value);
 }`;
+
 export function hashString(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) {
@@ -203,24 +246,36 @@ export function hashString(s) {
   }
   return h;
 }
+
 export class NCSVisualizer {
-  static NCS_GENRE_COLORS = {
-    drumstep:       [1.0, 0.0, 0.0],       // Красный
-    indieDance:     [1.0, 0.647, 0.0],     // Оранжевый
-    house:          [1.0, 1.0, 0.0],       // Жёлтый
-    trap:           [0.0, 1.0, 0.0],       // Зелёный
-    glitchHop:      [0.741, 0.988, 0.788], // Мятный
-    melodicDubstep: [0.0, 1.0, 1.0],       // Бирюзовый / Голубой
-    dubstep:        [0.118, 0.463, 1.0],   // Синий
-    futureHouse:    [0.502, 0.0, 0.502],   // Фиолетовый
-    futureBass:     [0.584, 0.439, 1.0],   // Лавандовый
-    drumAndBass:    [1.0, 0.0, 1.0],       // Маджента / Розовый
-    electronic:     [1.0, 1.0, 1.0],       // Белый
-    miscellaneous:  [0.0, 0.0, 0.0]        // Чёрный
-  };
+    static NCS_GENRE_COLORS = {
+      // Основной (каноничный NCS) + Акцент (близкий оттенок)
+      drumstep:       [1.0,   0.0,   0.0,     0.6,   0.0,   0.0  ], // Чистый красный Roy Knox + Тёмно-красный
+      indieDance:     [1.0,   0.647, 0.0,     0.85,  0.35,  0.0  ], // Оранжевый + Жжёный оранжевый
+      house:          [1.0,   1.0,   0.0,     0.85,  0.75,  0.0  ], // Жёлтый + Золотой
+      trap:           [0.478, 0.992, 0.251,   0.25,  0.80,  0.35 ], // #7afd40 + Тёмно-зелёный
+      glitchHop:      [0.2,   0.9,   0.5,     0.6,   1.0,   0.8  ], // Насыщенная мята + Светлая мята
+      melodicDubstep: [0.227, 1.0,   0.945,   0.1,   0.75,  0.9  ], // #3afff1 + Глубокий аквамарин
+      dubstep:        [0.118, 0.463, 1.0,     0.15,  0.30,  0.80 ], // #1e76ff + Индиго
+      futureHouse:    [0.15,  0.0,   0.5,     0.6,   0.2,   1.0  ], // Глубокий индиго (тень) + Неоновый фиолетовый (свет)
+      futureBass:     [0.584, 0.439, 1.0,     0.65,  0.2,   1.0  ], // #9570ff (база) + Глубокий неоновый фиолетовый
+      // futureHouse:    [0.443, 0.165, 0.961,   0.6,   0.25,  0.95 ], // #712af5 (глубокий) + Умеренный фиолетовый
+      // futureBass:     [0.584, 0.439, 1.0,     0.75,  0.65,  1.0  ], // #9570ff (лаванда) + Светящаяся лаванда
+      drumAndBass:    [1.0,   0.196, 0.969,   0.75,  0.05,  0.65 ], // #ff32f7 + Тёмная фуксия
+      electronic:     [1.0,   1.0,   1.0,     0.75,  0.85,  1.0  ], // Белый + Бледно-голубой
+      miscellaneous:  [0.0,   0.0,   0.0,     0.15,  0.15,  0.15 ], // Чёрный + Тёмно-серый
+      witchHouse:     [1.0,  1.0,   1.0,      0.9,   0.5,   0.7  ]  // Белый + Светло-розовый
+    };
+
+  static i = -1;
+
   constructor(canvas, options = {}) {
     this.canvas = canvas;
-    this.options = { dotCount: 322, color: [1, 0.4, 0], ...options };
+    this.options = { dotCount: 322, color: [1.0,   1.0,   1.0,     0.75,  0.85,  1.0  ], ...options };
+    const c = this.options.color;
+    if (c.length === 3) {
+      this.options.color = [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5];
+    }
     this.audioCtx = null;
     this.sourceNode = null;
     this.analyserNode = null;
@@ -246,24 +301,32 @@ export class NCSVisualizer {
     window.addEventListener('resize', this._onResize);
     this._resize();
   }
+
   static get COLORS() {
-    return this.NCS_GENRE_COLORS
+    return this.NCS_GENRE_COLORS;
   }
-  static randomColor() {
+
+  static newColor() {
     const colors = Object.values(NCSVisualizer.COLORS);
-    return colors[Math.floor(Math.random() * colors.length)];
+    this.i = (this.i + 1) % colors.length;
+    return colors[this.i];
   }
-  setColor(r, g, b) {
-    this.options.color = [r, g, b];
+
+  // Умный setColor: принимает и массив, и 6 аргументов, и 3 аргумента
+  setColor(...args) {
+    if (args.length === 1 && Array.isArray(args[0])) {
+      const c = args[0];
+      this.options.color = c.length === 3 ? [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5] : c;
+    } else if (args.length === 3) {
+      this.options.color = [...args, args[0]*0.5, args[1]*0.5, args[2]*0.5];
+    } else if (args.length === 6) {
+      this.options.color = args;
+    }
   }
+
   setAudioNodes(audioCtx, analyserNode, audioElement, seed) {
-    if (this.sourceNode) {
-      try { this.sourceNode.disconnect(); } catch (e) {}
-      this.sourceNode = null;
-    }
-    if (this.analyserNode && this.analyserNode !== analyserNode) {
-      try { this.analyserNode.disconnect(); } catch (e) {}
-    }
+    if (this.sourceNode) { try { this.sourceNode.disconnect(); } catch (e) {} this.sourceNode = null; }
+    if (this.analyserNode && this.analyserNode !== analyserNode) { try { this.analyserNode.disconnect(); } catch (e) {} }
     this.audioCtx = audioCtx;
     this.analyserNode = analyserNode;
     this.audioElement = audioElement;
@@ -282,13 +345,13 @@ export class NCSVisualizer {
       this._freqData = null;
     }
   }
+
   _initGL() {
     const gl = this.canvas.getContext('webgl2', { alpha: true, antialias: false });
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
-    if (!gl.getExtension('EXT_color_buffer_float')) {
-      throw new Error('EXT_color_buffer_float is required');
-    }
+    if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float is required');
+
     const cs = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src);
@@ -312,17 +375,21 @@ export class NCSVisualizer {
       }
       return p;
     };
+
     this._prog = {
       p: cp(cs(gl.VERTEX_SHADER, PARTICLE_VS), cs(gl.FRAGMENT_SHADER, PARTICLE_FS)),
       d: cp(cs(gl.VERTEX_SHADER, DOT_VS), cs(gl.FRAGMENT_SHADER, DOT_FS)),
       b: cp(cs(gl.VERTEX_SHADER, BLUR_VS), cs(gl.FRAGMENT_SHADER, BLUR_FS)),
       f: cp(cs(gl.VERTEX_SHADER, FINAL_VS), cs(gl.FRAGMENT_SHADER, FINAL_FS)),
     };
+
     this.quadBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,-1,1,1,1,1,-1]), gl.STATIC_DRAW);
+
     const U = (prog, name) => gl.getUniformLocation(prog, name);
     const A = (prog, name) => gl.getAttribLocation(prog, name);
+
     const p = this._prog.p;
     this._u = {
       pInPos: A(p, 'inPosition'),
@@ -337,6 +404,7 @@ export class NCSVisualizer {
       uNoiseAmp: U(p, 'uNoiseAmplitude'),
       uCenterPush: U(p, 'uCenterPush'),
     };
+
     const d = this._prog.d;
     this._u.dInPos = A(d, 'inPosition');
     this._u.uDotCount = U(d, 'uDotCount');
@@ -345,20 +413,27 @@ export class NCSVisualizer {
     this._u.uParticleTex = U(d, 'uParticleTexture');
     this._u.uAspectRatio = U(d, 'uAspectRatio');
     this._u.uCenterFade = U(d, 'uCenterFade');
+
     const b = this._prog.b;
     this._u.bInPos = A(b, 'inPosition');
     this._u.uBlurRadius = U(b, 'uBlurRadius');
     this._u.uBlurDir = U(b, 'uBlurDirection');
     this._u.uBlurInput = U(b, 'uInputTexture');
+
     const f = this._prog.f;
     this._u.fInPos = A(f, 'inPosition');
-    this._u.uOutputColor = U(f, 'uOutputColor');
+    this._u.uOutputColor1 = U(f, 'uOutputColor1');
+    this._u.uOutputColor2 = U(f, 'uOutputColor2');
+    this._u.uBass = U(f, 'uBass');
+    this._u.uTime = U(f, 'uTime');
     this._u.uBlurredTex = U(f, 'uBlurredTexture');
     this._u.uOriginalTex = U(f, 'uOriginalTexture');
+
     gl.enable(gl.BLEND);
     gl.blendEquation(gl.MAX);
     gl.clearColor(0, 0, 0, 0);
   }
+
   _createFB(internalFormat, format, type, filter) {
     const gl = this.gl;
     const fb = gl.createFramebuffer();
@@ -372,6 +447,7 @@ export class NCSVisualizer {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     return { fb, tex, internalFormat, format, type };
   }
+
   _initFBOs() {
     const gl = this.gl;
     const dc = this.options.dotCount;
@@ -391,6 +467,7 @@ export class NCSVisualizer {
     this._byf_tex = this._byf.tex;
     this._byf_fb = this._byf.fb;
   }
+
   _resize() {
     const gl = this.gl;
     const dpr = window.devicePixelRatio || 1;
@@ -420,6 +497,7 @@ export class NCSVisualizer {
     gl.texImage2D(gl.TEXTURE_2D, 0, this._byf.internalFormat, size, size, 0, this._byf.format, this._byf.type, null);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   }
+
   loadAudio(file) {
     if (this.audioElement) { this.audioElement.pause(); this.audioElement = null; }
     if (!this.audioCtx) this.audioCtx = new AudioContext();
@@ -444,21 +522,25 @@ export class NCSVisualizer {
     this._ampFull = false;
     this._freqData = new Uint8Array(this.analyserNode.frequencyBinCount);
   }
+
   play() {
     if (!this.audioElement) return;
     if (this.audioCtx?.state === 'suspended') this.audioCtx.resume();
     this.audioElement.play();
     this.isPlaying = true;
   }
+
   pause() {
     if (!this.audioElement) return;
     this.audioElement.pause();
     this.isPlaying = false;
   }
+
   togglePlay() { if (this.isPlaying) this.pause(); else this.play(); }
   get isActive() { return this.isPlaying; }
   get hasAudio() { return !!this.audioElement; }
   start() { this._running = true; this._render(0); }
+
   destroy() {
     this._running = false;
     if (this._animId) cancelAnimationFrame(this._animId);
@@ -467,6 +549,7 @@ export class NCSVisualizer {
     if (this.analyserNode) { this.analyserNode.disconnect(); this.analyserNode = null; }
     window.removeEventListener('resize', this._onResize);
   }
+
   _getBassAmplitude() {
     if (!this.analyserNode) {
       this._demoTime += 0.016;
@@ -498,6 +581,7 @@ export class NCSVisualizer {
     const boost = delta * 5.0;
     return Math.min(1, base + boost);
   }
+
   _drawQuad(loc) {
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
@@ -505,12 +589,14 @@ export class NCSVisualizer {
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
   }
+
   _render(time) {
     if (!this._running) return;
     this._animId = requestAnimationFrame(t => this._render(t));
     const gl = this.gl;
     this._resize();
     if (!this._vpSize) return;
+
     const dotCount = this._dotCount;
     const size = this._vpSize;
     const u = this._u;
@@ -518,6 +604,7 @@ export class NCSVisualizer {
     const progress = this.audioElement?.currentTime ?? this._demoTime;
     const dt = this._lastFrameTime ? (time - this._lastFrameTime) / 1000 : 1 / 60;
     this._lastFrameTime = time;
+
     const rawAmp = this._getBassAmplitude();
     const stiffness = 220.0;
     const damping = 14.0;
@@ -526,15 +613,18 @@ export class NCSVisualizer {
     this._ampVelocity += force * clampedDt;
     this._smoothAmp += this._ampVelocity * clampedDt;
     this._smoothAmp = Math.max(0.0, this._smoothAmp);
+
     const uAmplitude = this._smoothAmp;
     this._amplitudeIntegral += uAmplitude * dt * 3;
     const uNoiseOffset = (0.5 * progress + this._amplitudeIntegral) * 0.75;
+
     const uDotRadius = 0.9 / dotCount;
     const uDotRadiusPX = uDotRadius * 0.5 * size;
     const uSphereRadius = 0.675 + uAmplitude * 0.225;
     const amp3 = uAmplitude + 3;
     const uFeather = amp3 * amp3 * (45 / 1568);
-    const color = this.options.color;
+
+    // === Pass 1: particles → _pf_fb ===
     gl.disable(gl.BLEND);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._pf_fb);
     gl.viewport(0, 0, dotCount, dotCount);
@@ -551,11 +641,14 @@ export class NCSVisualizer {
     gl.uniform1f(u.uNoiseAmp, 0.288);
     gl.uniform1f(u.uCenterPush, 0.45);
     this._drawQuad(u.pInPos);
+
     if (this._prevDotCount !== dotCount) {
       gl.bindTexture(gl.TEXTURE_2D, this._pf_tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, dotCount, dotCount, 0, gl.RG, gl.FLOAT, null);
       this._prevDotCount = dotCount;
     }
+
+    // === Pass 2: dots → _df_fb ===
     gl.enable(gl.BLEND);
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._df_fb);
     gl.viewport(0, 0, size, size);
@@ -573,6 +666,8 @@ export class NCSVisualizer {
     gl.enableVertexAttribArray(u.dInPos);
     gl.vertexAttribPointer(u.dInPos, 2, gl.FLOAT, false, 0, 0);
     gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 4, dotCount * dotCount);
+
+    // === Pass 3: horizontal blur ===
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._bxf_fb);
     gl.viewport(0, 0, size, size);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -583,18 +678,25 @@ export class NCSVisualizer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._df_tex);
     this._drawQuad(u.bInPos);
+
+    // === Pass 4: vertical blur ===
     gl.bindFramebuffer(gl.FRAMEBUFFER, this._byf_fb);
     gl.viewport(0, 0, size, size);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.uniform2f(u.uBlurDir, 0, this._invSize);
     gl.bindTexture(gl.TEXTURE_2D, this._bxf_tex);
     this._drawQuad(u.bInPos);
+
+    // === Pass 5: composite → canvas ===
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this._w, this._h);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.viewport(this._vpX, this._vpY, size, size);
     gl.useProgram(pp.f);
-    gl.uniform3f(u.uOutputColor, color[0], color[1], color[2]);
+    gl.uniform3f(u.uOutputColor1, this.options.color[0], this.options.color[1], this.options.color[2]);
+    gl.uniform3f(u.uOutputColor2, this.options.color[3], this.options.color[4], this.options.color[5]);
+    gl.uniform1f(u.uBass, uAmplitude);
+    gl.uniform1f(u.uTime, time * 0.001);
     gl.uniform1i(u.uBlurredTex, 0);
     gl.uniform1i(u.uOriginalTex, 1);
     gl.activeTexture(gl.TEXTURE0);
