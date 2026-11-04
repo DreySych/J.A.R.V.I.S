@@ -1,8 +1,10 @@
 *.wav
 *.jpg
 *.env
+*.py[cod]
 models/
 __pycache__/
-*.py[cod]
 .gigacode/
 plans/
+audio/
+media/

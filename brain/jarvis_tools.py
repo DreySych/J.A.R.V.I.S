@@ -22,6 +22,7 @@ _TYPE_MAP = {
     "boolean": "boolean",
 }
 
+
 def _convert_type(raw_type):
     return _TYPE_MAP.get(raw_type.lower(), "string")
 
@@ -102,6 +103,14 @@ def execute_tool_call(tool_name, arguments_dict, tool_registry):
         return "Ошибка: инструмент '{0}' не найден.".format(tool_name)
 
     module, tool_def = tool_registry[tool_name]
+    if tool_def.get("name") == "get_media":
+        arguments_dict = dict(arguments_dict)
+        media_type = str(arguments_dict.get("type", "")).strip().lower()
+        arguments_dict["type"] = {
+            "photo": "jpeg",
+            "image": "jpeg",
+            "video": "mp4",
+        }.get(media_type, media_type)
     endpoint = module.get("endpoint", "")
     method = tool_def.get("method", "POST").upper()
     path = tool_def.get("path", "")
@@ -150,6 +159,30 @@ def execute_tool_call(tool_name, arguments_dict, tool_registry):
         use_query = bool(tool_def.get("query")) or method == "GET"
 
         kwargs = {"params": body} if use_query else {"json": body}
+
+        media_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "media")
+
+        if tool_def.get("name") == "get_media":
+            name = os.path.basename(str(arguments_dict.get("name", "")))
+            media_type = str(arguments_dict.get("type", "")).strip().lower()
+
+            if name and media_type in ("mp4", "jpeg"):
+                filename = (
+                    name
+                    if name.casefold().endswith("." + media_type)
+                    else f"{name}.{media_type}"
+                )
+
+                filepath = os.path.join(media_dir, filename)
+
+                if os.path.isfile(filepath):
+                    size_kb = os.path.getsize(filepath) / 1024.0
+                    prefix = "Файл уже сохранён локально"
+
+                    return "{0}: {1} ({2:.0f} КБ)".format(
+                        prefix, filepath, size_kb
+                    )
+
         response = requests.request(method, url, timeout=timeout, **kwargs)
 
         response.raise_for_status()
@@ -161,6 +194,12 @@ def execute_tool_call(tool_name, arguments_dict, tool_registry):
             os.makedirs(media_dir, exist_ok=True)
 
             ext = content_type.split("/")[-1] if "/" in content_type else ""
+
+            if tool_def.get("name") == "get_media":
+                media_type = str(arguments_dict.get("type", "")).strip().lower()
+                if media_type in ("mp4", "jpeg"):
+                    ext = media_type
+
             if not ext or ext in ("octet-stream", "x-matroska"):
                 ext = tool_def.get("ext", "bin")
 

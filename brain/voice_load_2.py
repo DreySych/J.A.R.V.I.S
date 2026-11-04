@@ -14,7 +14,7 @@ PIPER_MODEL_PATH = BASE_DIR / "models" / "piper" / "ru_RU-ruslan-medium.onnx"
 
 voice = PiperVoice.load(PIPER_MODEL_PATH)
 
-SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+SENTENCE_SPLIT = re.compile(r"(?<=[.,!?…])\s+")
 
 
 def split_sentences(text):
@@ -26,7 +26,7 @@ def split_sentences(text):
 
     result = []
     for part in parts:
-        if not part[-1] in ".!?…":
+        if part[-1] not in ".,!?…":
             part += "."
         result.append(part)
 
@@ -85,9 +85,11 @@ if __name__ == "__main__":
     out = "test.wav"
 
     text = (
-        "Проверка связи, сэр. "
+        "Проверка связи, "
+        "сэр. "
         "Системы работают штатно. "
-        "Последняя запись сохранена."
+        "Последняя запись сохранена, "
+        "Я вас слушаю."
     )
 
     synthesize_wav_piper(text, out)
