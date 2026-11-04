@@ -262,9 +262,9 @@ export class NCSVisualizer {
       // futureHouse:    [0.443, 0.165, 0.961,   0.6,   0.25,  0.95 ], // #712af5 (глубокий) + Умеренный фиолетовый
       // futureBass:     [0.584, 0.439, 1.0,     0.75,  0.65,  1.0  ], // #9570ff (лаванда) + Светящаяся лаванда
       drumAndBass:    [1.0,   0.196, 0.969,   0.75,  0.05,  0.65 ], // #ff32f7 + Тёмная фуксия
+      witchHouse:     [1.0,  1.0,   1.0,      0.9,   0.5,   0.7  ], // Белый + Светло-розовый
       electronic:     [1.0,   1.0,   1.0,     0.75,  0.85,  1.0  ], // Белый + Бледно-голубой
       miscellaneous:  [0.0,   0.0,   0.0,     0.15,  0.15,  0.15 ], // Чёрный + Тёмно-серый
-      witchHouse:     [1.0,  1.0,   1.0,      0.9,   0.5,   0.7  ]  // Белый + Светло-розовый
     };
 
   static i = -1;
@@ -298,9 +298,11 @@ export class NCSVisualizer {
     this._animId = null;
     this._vpSize = 0;
     this._ampBuffer = new Float32Array(8);
-    this._ampIndex = 0;
-    this._ampFull = false;
     this._freqData = null;
+    this._currentColor = [...this.options.color];
+    this._targetColor = [...this.options.color];
+    this.rainbowMode = false;
+    this._rainbowHue = 0;
     this._initGL();
     this._initFBOs();
     this._onResize = () => this._resize();
@@ -318,16 +320,23 @@ export class NCSVisualizer {
     return colors[this.i];
   }
 
-  // Умный setColor: принимает и массив, и 6 аргументов, и 3 аргумента
   setColor(...args) {
+    let newColor;
     if (args.length === 1 && Array.isArray(args[0])) {
       const c = args[0];
-      this.options.color = c.length === 3 ? [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5] : c;
+      newColor = c.length === 3 ? [...c, c[0]*0.5, c[1]*0.5, c[2]*0.5] : c;
     } else if (args.length === 3) {
-      this.options.color = [...args, args[0]*0.5, args[1]*0.5, args[2]*0.5];
+      newColor = [...args, args[0]*0.5, args[1]*0.5, args[2]*0.5];
     } else if (args.length === 6) {
-      this.options.color = args;
+      newColor = args;
     }
+    if (newColor) {
+      this._targetColor = [...newColor];
+    }
+  }
+
+  setRainbowMode(enabled) {
+    this.rainbowMode = enabled;
   }
 
   setListening(enabled) {
@@ -352,8 +361,6 @@ export class NCSVisualizer {
     this._ampVelocity = 0;
     this._demoTime = 0;
     this._ampBuffer.fill(0);
-    this._ampIndex = 0;
-    this._ampFull = false;
     if (analyserNode) {
       this._freqData = new Uint8Array(analyserNode.frequencyBinCount);
     } else {
@@ -533,8 +540,6 @@ export class NCSVisualizer {
     this._seed = Date.now() | 0;
     this._demoTime = 0;
     this._ampBuffer.fill(0);
-    this._ampIndex = 0;
-    this._ampFull = false;
     this._freqData = new Uint8Array(this.analyserNode.frequencyBinCount);
   }
 
@@ -741,9 +746,36 @@ export class NCSVisualizer {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.viewport(this._vpX, this._vpY, size, size);
     gl.useProgram(pp.f);
-    gl.uniform3f(u.uOutputColor1, this.options.color[0], this.options.color[1], this.options.color[2]);
-    gl.uniform3f(u.uOutputColor2, this.options.color[3], this.options.color[4], this.options.color[5]);
-    gl.uniform1f(u.uBass, uAmplitude);
+    if (this.rainbowMode) {
+      const speed = 0.05 + uAmplitude * 0.2;
+      this._rainbowHue = (this._rainbowHue + speed * dt) % 1.0;
+      const hsvToRgb = (h, s, v) => {
+        let r, g, b;
+        const i = Math.floor(h * 6);
+        const f = h * 6 - i;
+        const p = v * (1 - s);
+        const q = v * (1 - f * s);
+        const t = v * (1 - (1 - f) * s);
+        switch (i % 6) {
+          case 0: r = v; g = t; b = p; break;
+          case 1: r = q; g = v; b = p; break;
+          case 2: r = p; g = v; b = t; break;
+          case 3: r = p; g = q; b = v; break;
+          case 4: r = t; g = p; b = v; break;
+          case 5: r = v; g = p; b = q; break;
+        }
+        return [r, g, b];
+      };
+      const baseColor = hsvToRgb(this._rainbowHue, 1.0, 1.0);
+      const accentColor = hsvToRgb((this._rainbowHue + 0.1) % 1.0, 1.0, 0.8);
+      this._targetColor = [...baseColor, ...accentColor];
+    }
+    const colorLerpFactor = Math.min(1.0, dt * 3.0);
+    for (let i = 0; i < 6; i++) {
+      this._currentColor[i] += (this._targetColor[i] - this._currentColor[i]) * colorLerpFactor;
+    }
+    gl.uniform3f(u.uOutputColor1, this._currentColor[0], this._currentColor[1], this._currentColor[2]);
+    gl.uniform3f(u.uOutputColor2, this._currentColor[3], this._currentColor[4], this._currentColor[5]);
     gl.uniform1f(u.uTime, time * 0.001);
     gl.uniform1i(u.uBlurredTex, 0);
     gl.uniform1i(u.uOriginalTex, 1);

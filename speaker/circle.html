@@ -71,6 +71,7 @@
       <input id="fileInput" type="file" accept="audio/*">
     </label>
     <button id="playPauseBtn">Пауза / продолжить</button>
+    <button id="rainbowBtn">Радуга</button>
     <span id="status">Demo режим (синтетический бас)</span>
   </div>
 
@@ -136,8 +137,18 @@
     });
 
     canvas.addEventListener('click', () => {
+      if (viz.rainbowMode) {
+        viz.setRainbowMode(false);
+        document.getElementById('rainbowBtn').textContent = "Радуга";
+      }
       const newcolor = NCSVisualizer.newColor();
-      viz.setColor(newcolor[0], newcolor[1], newcolor[2], newcolor[3], newcolor[4], newcolor[5]);
+      viz.setColor(...newcolor);
+    });
+
+    document.getElementById('rainbowBtn').addEventListener('click', () => {
+      viz.setRainbowMode(!viz.rainbowMode);
+      const btn = document.getElementById('rainbowBtn');
+      btn.textContent = viz.rainbowMode ? "Выкл" : "Радуга";
     });
 
     window.screenGlow = function (enabled) {
