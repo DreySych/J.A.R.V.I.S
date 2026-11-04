@@ -5,29 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NCS Visualizer</title>
   <style>
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    }
+
     body {
       margin: 0;
       overflow: hidden;
       background: #050505;
-      color: #fff;
-      font-family: 'Segoe UI', system-ui, sans-serif;
     }
+
     #bg-layer {
       position: fixed;
       inset: 0;
       z-index: -1;
+      background-image: url('media/colors.webp');
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
+      background-color: rgba(0, 0, 0, 0.6);
+      background-blend-mode: overlay;
       opacity: 1;
       transition: opacity 1.5s ease-in-out;
     }
+
     canvas {
       display: block;
       width: 100vw;
       height: 80vh;
+      position: relative;
+      z-index: 10;
     }
+
     .controls {
       position: fixed;
       bottom: 24px;
@@ -41,6 +51,11 @@
       width: min(90vw, 580px);
       z-index: 10;
     }
+
+    button, .file-button, input {
+      font-family: inherit;
+    }
+
     button, .file-button {
       border: 1px solid rgba(255, 255, 255, 0.2);
       border-radius: 6px;
@@ -52,11 +67,14 @@
       backdrop-filter: blur(10px);
       transition: 0.2s;
     }
+
     button:hover, .file-button:hover {
       background: rgba(40, 40, 50, 0.9);
       border-color: rgba(255, 255, 255, 0.4);
     }
+
     input[type="file"] { display: none; }
+
     #status {
       width: 100%;
       text-align: center;
@@ -170,6 +188,7 @@
         z-index: -1;
         background-size: cover;
         background-position: center;
+        background-repeat: no-repeat;
         opacity: 0;
         transition: opacity 1.5s ease-in-out;
       `;
@@ -178,12 +197,12 @@
         newBg.style.backgroundColor = source;
       } else {
         newBg.style.backgroundImage = `url('${source}')`;
+        newBg.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+        newBg.style.backgroundBlendMode = 'overlay';
       }
 
       document.body.appendChild(newBg);
-
       void newBg.offsetWidth;
-
       newBg.style.opacity = '1';
 
       const oldBg = document.getElementById('bg-layer');
@@ -192,9 +211,8 @@
         setTimeout(() => oldBg.remove(), 1500);
       }
 
-      setTimeout(() => { newBg.id = 'bg-layer'; }, 100);
+      setTimeout(() => { newBg.id = 'bg-layer'; }, 1500);
     };
-
   </script>
 </body>
 </html>
