@@ -30,6 +30,7 @@ pywebview
 torch
 torchaudio
 piper-tts
+librosa
 
 # Нормализация текста для озвучки
 ru-normalizr

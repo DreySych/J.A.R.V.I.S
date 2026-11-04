@@ -6,20 +6,23 @@
   <title>NCS Visualizer</title>
   <style>
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      overflow: hidden;
-      background: #000;
-      color: #fff;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-    }
-    /* Канвас на весь экран */
+     body {
+       margin: 0;
+       overflow: hidden;
+       color: #fff;
+       font-family: 'Segoe UI', system-ui, sans-serif;
+
+       background-image: url("сolors.jpg");
+       background-size: cover;
+       background-position: center;
+       background-repeat: no-repeat;
+       background-attachment: fixed; 
+     }
     canvas {
       display: block;
       width: 100vw;
       height: 80vh;
     }
-    /* Панель управления снизу */
     .controls {
       position: fixed;
       bottom: 24px;
@@ -61,10 +64,8 @@
 </head>
 <body>
 
-  <!-- Канвас для визуализатора -->
   <canvas id="c"></canvas>
 
-  <!-- Элементы управления -->
   <div class="controls">
     <label class="file-button">
       Выбрать аудио
@@ -75,9 +76,7 @@
     <span id="status">Demo режим (синтетический бас)</span>
   </div>
 
-  <!-- Подключаем библиотеку как ES-модуль -->
   <script type="module">
-    // ВАЖНО: Убедитесь, что файл ncs-visualizer.js лежит в той же папке!
     import { NCSVisualizer } from './ncs-visualizer.js';
 
     const canvas = document.getElementById('c');

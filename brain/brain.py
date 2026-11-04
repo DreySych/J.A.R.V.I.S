@@ -39,7 +39,7 @@ def chat():
         response_text = ask_jarvis(user_text)
         normalized_text = normalize_for_tts(response_text)
 
-        synthesize_wav_silero(normalized_text, str(RESPONSE_PATH))
+        synthesize_wav_piper(normalized_text, str(RESPONSE_PATH))
 
         return send_file(
             RESPONSE_PATH,
