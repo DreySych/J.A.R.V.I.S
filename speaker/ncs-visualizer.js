@@ -209,28 +209,39 @@ in vec3 fragColor2;
 in float fragBass;
 in float fragTime;
 out vec4 outColor;
-
 void main() {
   float orig = texture(uOriginalTexture, fragUV).r; 
   float blur = texture(uBlurredTexture, fragUV).r;  
-  float expandedBlur = pow(blur, 0.65);
+  
+  float isBlack = 1.0 - smoothstep(0.01, 0.2, length(fragColor1));
+  
+  float expandedBlur = mix(pow(blur, 0.65), blur, isBlack);
   float value = max(orig, expandedBlur);
+  
   if (value < 0.01) { outColor = vec4(0.0); return; }
+  
   vec2 toCenter = fragUV - vec2(0.5);
   float angle = atan(toCenter.y, toCenter.x);
   float sweep = sin(angle + fragTime * 1.0) * 0.5 + 0.5;
   float density = smoothstep(0.2, 0.9, value);
   float mixFactor = clamp(sweep * 0.6 + density * 0.4, 0.2, 0.8);
   vec3 standardColor = mix(fragColor1, fragColor2, mixFactor);
+  
   float coreMask = smoothstep(0.4, 0.8, orig); 
   vec3 glowColor = fragColor2 * 1.3; 
   vec3 splitColor = mix(glowColor, fragColor1, coreMask);
   vec3 color = mix(standardColor, splitColor, uSeparateGlow);
   color *= (1.0 + fragBass * 0.15);
+  
   float specular = smoothstep(0.95, 1.0, value) * 0.1 * (1.0 - uSeparateGlow);
-  color = mix(color, vec3(1.0), specular);
+  color = mix(color, vec3(1.0), specular * (1.0 - isBlack));
+  
+  color = mix(color, vec3(0.0), isBlack);
+  
   float dimmer = 0.85;
-  outColor = vec4(color * value * dimmer, value * dimmer);
+  float alpha = mix(value * dimmer, value, isBlack);
+  
+  outColor = vec4(color * value * dimmer, alpha);
 }`;
 
 export function hashString(s) {
@@ -259,7 +270,7 @@ export class NCSVisualizer {
       drumAndBass:    [1.0,   0.196, 0.969,   0.75,  0.05,  0.65 ],
       angelcore:      [1.0,   1.0,   1.0,     1.0,   0.6,   0.85 ],
       electronic:     [1.0,   1.0,   1.0,     0.85,  0.85,  0.85 ],
-      miscellaneous:  [0.0,   0.0,   0.0,     0.15,  0.15,  0.15 ],
+      miscellaneous:  [0.0,   0.0,   0.0,     0.0,   0.0,   0.0  ]
     };
 
   static i = -1;

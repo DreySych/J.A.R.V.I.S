@@ -14,12 +14,13 @@
       margin: 0;
       overflow: hidden;
       background: #050505;
+      transition: background-color 0.5s ease-in-out;
     }
 
     #bg-layer {
       position: fixed;
       inset: 0;
-      z-index: -1;
+      z-index: -2;
       background-image: url('media/colors.webp');
       background-size: cover;
       background-position: center;
@@ -27,7 +28,16 @@
       background-color: rgba(0, 0, 0, 0.6);
       background-blend-mode: overlay;
       opacity: 1;
-      transition: opacity 1.5s ease-in-out;
+      transition: opacity 0.5s ease-in-out;
+    }
+
+    #particles-js {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.5s ease-in-out, filter 0.5s ease-in-out;
     }
 
     canvas {
@@ -82,13 +92,14 @@
       font-size: 12px;
       letter-spacing: 0.5px;
       margin-top: 8px;
+      transition: color 0.5s ease-in-out;
     }
   </style>
 </head>
 <body>
 
   <div id="bg-layer"></div>
-
+  <div id="particles-js"></div>
   <canvas id="c"></canvas>
 
   <div class="controls">
@@ -98,8 +109,11 @@
     </label>
     <button id="playPauseBtn">Пауза / продолжить</button>
     <button id="rainbowBtn">Радуга</button>
+    <button id="particlesBtn">Инверсия: Выкл</button>
     <span id="status">Demo режим (синтетический бас)</span>
   </div>
+
+  <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
 
   <script type="module">
     import { NCSVisualizer } from './ncs-visualizer.js';
@@ -108,12 +122,123 @@
     const fileInput = document.getElementById('fileInput');
     const playPauseBtn = document.getElementById('playPauseBtn');
     const statusEl = document.getElementById('status');
+    const particlesBtn = document.getElementById('particlesBtn');
+    const particlesContainer = document.getElementById('particles-js');
+
+    let particlesOn = false;
+    let previousColor = null;
+
+    particlesJS("particles-js", {
+      particles: {
+        number: { value: 150, density: { enable: true, value_area: 800 } },
+        color: {
+          value: ["#ffffff", "#cccccc", "#999999"]
+        },
+        shape: {
+          type: "image",
+          image: {
+            src: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjgiPjxwYXRoIGQ9Ik0wLDAgTDQsMiBMMiw4IFoiIGZpbGw9IiNmZmZmZmYiLz48L3N2Zz4=",
+            width: 4,
+            height: 8
+          }
+        },
+        opacity: {
+          value: 0.8,
+          random: true,
+          anim: {
+            enable: true,
+            speed: 0.8,
+            opacity_min: 0.1,
+            sync: false
+          }
+        },
+        size: {
+          value: 3,
+          random: true
+        },
+        line_linked: { enable: false },
+        move: {
+          enable: true,
+          speed: 2.5,
+          direction: "top",
+          random: true,
+          straight: false,
+          out_mode: "out",
+          bounce: false,
+          attract: { enable: false }
+        },
+        rotate: {
+          value: 0,
+          random: true,
+          direction: "random",
+          animation: {
+            enable: true,
+            speed: 10,
+            sync: false
+          }
+        }
+      },
+      interactivity: {
+        detect_on: "canvas",
+        events: {
+          onhover: { enable: false },
+          onclick: { enable: false }
+        }
+      },
+      retina_detect: true
+    });
+
+    if (window.pJSDom && window.pJSDom.length > 0) {
+      cancelAnimationFrame(window.pJSDom[0].pJS.fn.checkAnimFrame);
+      cancelAnimationFrame(window.pJSDom[0].pJS.fn.drawAnimFrame);
+    }
 
     const viz = new NCSVisualizer(canvas, {
       dotCount: 350,
     });
 
     viz.start();
+
+    particlesBtn.addEventListener('click', () => {
+      particlesOn = !particlesOn;
+
+      if (particlesOn) {
+        previousColor = [...viz._targetColor];
+
+        document.body.style.backgroundColor = '#e8e8e8';
+        document.getElementById('bg-layer').style.opacity = '0';
+        statusEl.style.color = '#aaa';
+
+        particlesContainer.style.opacity = '1';
+        particlesContainer.style.filter = 'invert(1)';
+        particlesBtn.textContent = "Инверсия: Вкл";
+
+        viz.setColor(...NCSVisualizer.NCS_GENRE_COLORS.miscellaneous);
+
+        if (window.pJSDom && window.pJSDom.length > 0) {
+          window.pJSDom[0].pJS.fn.vendors.start();
+        }
+      } else {
+        document.body.style.backgroundColor = '#050505';
+        document.getElementById('bg-layer').style.opacity = '1';
+        statusEl.style.color = '#555';
+
+        particlesContainer.style.opacity = '0';
+        particlesContainer.style.filter = 'none';
+        particlesBtn.textContent = "Инверсия: Выкл";
+
+        if (previousColor) {
+          viz.setColor(...previousColor);
+        } else {
+          viz.setColor(...NCSVisualizer.newColor());
+        }
+
+        if (window.pJSDom && window.pJSDom.length > 0) {
+          cancelAnimationFrame(window.pJSDom[0].pJS.fn.checkAnimFrame);
+          cancelAnimationFrame(window.pJSDom[0].pJS.fn.drawAnimFrame);
+        }
+      }
+    });
 
     window.playAIResponse = function(base64Audio) {
       const byteCharacters = atob(base64Audio);
@@ -134,7 +259,6 @@
       try {
         viz.loadAudio(file);
         viz.play();
-
         statusEl.textContent = "▶ " + file.name.replace(/\.[^/.]+$/, "");
         playPauseBtn.textContent = "Пауза";
       } catch (error) {
@@ -150,9 +274,7 @@
         statusEl.textContent = "Сначала выберите аудиофайл";
         return;
       }
-
       viz.togglePlay();
-
       if (viz.isPlaying) {
         playPauseBtn.textContent = "Пауза";
       } else {
@@ -161,6 +283,8 @@
     });
 
     canvas.addEventListener('click', () => {
+      if (particlesOn) return;
+
       if (viz.rainbowMode) {
         viz.setRainbowMode(false);
         document.getElementById('rainbowBtn').textContent = "Радуга";
@@ -170,6 +294,8 @@
     });
 
     document.getElementById('rainbowBtn').addEventListener('click', () => {
+      if (particlesOn) return;
+
       viz.setRainbowMode(!viz.rainbowMode);
       const btn = document.getElementById('rainbowBtn');
       btn.textContent = viz.rainbowMode ? "Выкл" : "Радуга";
@@ -185,7 +311,7 @@
       newBg.style.cssText = `
         position: fixed;
         inset: 0;
-        z-index: -1;
+        z-index: -2;
         background-size: cover;
         background-position: center;
         background-repeat: no-repeat;
