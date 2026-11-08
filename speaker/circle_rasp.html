@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NCS Visualizer</title>
+<style>
+
+* {
+box-sizing: border-box;
+font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+body {
+margin: 0;
+overflow: hidden;
+background: #050505;
+transition: background-color 0.5s ease-in-out;
+}
+
+#bg-layer {
+position: fixed;
+inset: 0;
+z-index: -2;
+background-size: cover;
+background-position: center;
+background-repeat: no-repeat;
+background-color: rgba(0, 0, 0, 0.0);
+background-blend-mode: overlay;
+opacity: 1;
+transition: opacity 0.5s ease-in-out;
+}
+
+#particles-js {
+position: fixed;
+inset: 0;
+z-index: -1;
+pointer-events: none;
+display: none;
+opacity: 0;
+transition: opacity 0.5s ease-in-out, filter 0.5s ease-in-out;
+}
+
+canvas {
+display: block;
+width: 100vw;
+height: 80vh;
+position: relative;
+z-index: 10;
+}
+
+.controls {
+position: fixed;
+bottom: 24px;
+left: 50%;
+transform: translateX(-50%);
+display: flex;
+flex-wrap: wrap;
+align-items: center;
+justify-content: center;
+gap: 12px;
+width: min(90vw, 580px);
+z-index: 10;
+}
+
+button, .file-button, input {
+font-family: inherit;
+}
+
+button, .file-button {
+border: 1px solid rgba(255, 255, 255, 0.2);
+border-radius: 6px;
+background: rgba(10, 10, 15, 0.8);
+color: #fff;
+padding: 10px 18px;
+font-size: 14px;
+cursor: pointer;
+backdrop-filter: blur(10px);
+transition: 0.2s;
+}
+
+button:hover, .file-button:hover {
+background: rgba(40, 40, 50, 0.9);
+border-color: rgba(255, 255, 255, 0.4);
+}
+
+input[type="file"] { display: none; }
+
+#status {
+width: 100%;
+text-align: center;
+color: #555;
+font-size: 12px;
+letter-spacing: 0.5px;
+margin-top: 8px;
+transition: color 0.5s ease-in-out;
+}
+</style>
+</head>
+<body>
+
+<div id="bg-layer"></div>
+<div id="particles-js"></div>
+<canvas id="c"></canvas>
+
+<div class="controls">
+<label class="file-button">
+Выбрать аудио
+<input id="fileInput" type="file" accept="audio/*">
+</label>
+<button id="playPauseBtn">Пауза / продолжить</button>
+<button id="rainbowBtn">Радуга</button>
+<button id="particlesBtn">Инверсия: Выкл</button>
+<span id="status">Demo режим (синтетический бас)</span>
+</div>
+
+<script src="particles.min.js"></script>
+
+<script type="module">
+import { NCSVisualizer } from './ncs.js';
+
+const canvas = document.getElementById('c');
+const fileInput = document.getElementById('fileInput');
+const playPauseBtn = document.getElementById('playPauseBtn');
+const statusEl = document.getElementById('status');
+const particlesBtn = document.getElementById('particlesBtn');
+const particlesContainer = document.getElementById('particles-js');
+
+let particlesOn = false;
+let previousColor = null;
+let particlesInitialized = false;
+
+const viz = new NCSVisualizer(canvas, {
+dotCount: 32
+});
+
+viz.start();
+
+particlesBtn.addEventListener('click', () => {
+particlesOn = !particlesOn;
+
+if (particlesOn) {
+previousColor = [...viz._targetColor];
+
+document.body.style.backgroundColor = '#e8e8e8';
+document.getElementById('bg-layer').style.opacity = '0';
+statusEl.style.color = '#aaa';
+
+particlesContainer.style.display = 'block';
+particlesContainer.style.opacity = '1';
+particlesContainer.style.filter = 'invert(1)';
+particlesBtn.textContent = "Инверсия: Вкл";
+
+viz.setColor(...NCSVisualizer.NCS_GENRE_COLORS.miscellaneous);
+
+if (!particlesInitialized) {
+particlesJS("particles-js", {
+particles: {
+number: { value: 150, density: { enable: true, value_area: 800 } },
+color: {
+value: ["#ffffff", "#cccccc", "#999999"]
+},
+shape: {
+type: "image",
+image: {
+src: "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjgiPjxwYXRoIGQ9Ik0wLDAgTDQsMiBMMiw4IFoiIGZpbGw9IiNmZmZmZmYiLz48L3N2Zz4=",
+width: 4,
+height: 8
+}
+},
+opacity: {
+value: 0.8,
+random: true,
+anim: {
+enable: true,
+speed: 0.8,
+opacity_min: 0.1,
+sync: false
+}
+},
+size: {
+value: 3,
+random: true
+},
+line_linked: { enable: false },
+move: {
+enable: true,
+speed: 2.5,
+direction: "top",
+random: true,
+straight: false,
+out_mode: "out",
+bounce: false,
+attract: { enable: false }
+},
+rotate: {
+value: 0,
+random: true,
+direction: "random",
+animation: {
+enable: true,
+speed: 10,
+sync: false
+}
+}
+},
+interactivity: {
+detect_on: "canvas",
+events: {
+onhover: { enable: false },
+onclick: { enable: false }
+}
+},
+retina_detect: true
+});
+particlesInitialized = true;
+} else if (window.pJSDom && window.pJSDom.length > 0) {
+window.pJSDom[0].pJS.fn.vendors.start();
+}
+
+} else {
+document.body.style.backgroundColor = '#050505';
+document.getElementById('bg-layer').style.opacity = '1';
+statusEl.style.color = '#555';
+
+particlesContainer.style.display = 'none';
+particlesContainer.style.opacity = '0';
+particlesContainer.style.filter = 'none';
+particlesBtn.textContent = "Инверсия: Выкл";
+
+if (previousColor) {
+viz.setColor(...previousColor);
+} else {
+viz.setColor(...NCSVisualizer.newColor());
+}
+
+if (window.pJSDom && window.pJSDom.length > 0) {
+cancelAnimationFrame(window.pJSDom[0].pJS.fn.checkAnimFrame);
+cancelAnimationFrame(window.pJSDom[0].pJS.fn.drawAnimFrame);
+}
+}
+});
+
+window.playAIResponse = function(base64Audio) {
+const byteCharacters = atob(base64Audio);
+const byteNumbers = new Array(byteCharacters.length);
+for (let i = 0; i < byteCharacters.length; i++) {
+byteNumbers[i] = byteCharacters.charCodeAt(i);
+}
+const byteArray = new Uint8Array(byteNumbers);
+const blob = new Blob([byteArray], {type: 'audio/wav'});
+const url = URL.createObjectURL(blob);
+viz.playFromUrl(url);
+};
+
+fileInput.addEventListener('change', async (e) => {
+const file = e.target.files[0];
+if (!file) return;
+
+try {
+viz.loadAudio(file);
+viz.play();
+statusEl.textContent = "▶ " + file.name.replace(/\.[^/.]+$/, "");
+playPauseBtn.textContent = "Пауза";
+} catch (error) {
+console.error(error);
+statusEl.textContent = "Ошибка загрузки аудио";
+}
+});
+
+viz.setPulsationStrength(1.5);
+
+playPauseBtn.addEventListener('click', () => {
+if (!viz.hasAudio) {
+statusEl.textContent = "Сначала выберите аудиофайл";
+return;
+}
+viz.togglePlay();
+if (viz.isPlaying) {
+playPauseBtn.textContent = "Пауза";
+} else {
+playPauseBtn.textContent = "Продолжить";
+}
+});
+
+canvas.addEventListener('click', () => {
+if (particlesOn) return;
+
+if (viz.rainbowMode) {
+viz.setRainbowMode(false);
+document.getElementById('rainbowBtn').textContent = "Радуга";
+}
+const newcolor = NCSVisualizer.newColor();
+viz.setColor(...newcolor);
+});
+
+document.getElementById('rainbowBtn').addEventListener('click', () => {
+if (particlesOn) return;
+
+viz.setRainbowMode(!viz.rainbowMode);
+const btn = document.getElementById('rainbowBtn');
+btn.textContent = viz.rainbowMode ? "Выкл" : "Радуга";
+});
+
+window.screenGlow = function (enabled) {
+viz.setListening(enabled);
+};
+
+window.changeBackground = function(source, isColor = false) {
+const newBg = document.createElement('div');
+newBg.id = 'bg-layer-new';
+newBg.style.cssText = `
+position: fixed;
+inset: 0;
+z-index: -2;
+background-size: cover;
+background-position: center;
+background-repeat: no-repeat;
+opacity: 0;
+transition: opacity 1.5s ease-in-out;
+`;
+
+if (isColor) {
+newBg.style.backgroundColor = source;
+} else {
+newBg.style.backgroundImage = "url('" + source + "')";
+newBg.style.backgroundColor = 'rgba(0, 0, 0, 0.6)';
+newBg.style.backgroundBlendMode = 'overlay';
+}
+
+document.body.appendChild(newBg);
+void newBg.offsetWidth;
+newBg.style.opacity = '1';
+
+const oldBg = document.getElementById('bg-layer');
+if (oldBg) {
+oldBg.style.opacity = '0';
+setTimeout(() => oldBg.remove(), 1500);
+}
+
+setTimeout(() => { newBg.id = 'bg-layer'; }, 1500);
+};
+</script>
+</body>
+</html>

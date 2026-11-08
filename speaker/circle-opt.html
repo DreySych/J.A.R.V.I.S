@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>J.A.R.V.I.S. Interface</title>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #050505;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    canvas { display: block; }
+    #status {
+      position: fixed;
+      bottom: 20px;
+      font-size: 12px;
+      color: #555;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="canvas"></canvas>
+  <div id="status">Ожидание...</div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+
+    let width, height, cx, cy, radius;
+    let audioCtx, analyser, dataArray, source;
+    let audioElement = new Audio();
+
+    let isPlaying = false;
+    let isListening = false;
+    let time = 0;
+    let currentHue = 140; // Зеленый NCS
+
+    function resize() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+      cx = width / 2;
+      cy = height / 2;
+      radius = Math.min(width, height) * 0.25;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // 1. ФУНКЦИЯ ДЛЯ PYTHON: Слушание (активация)
+    window.screenGlow = function (enabled) {
+      isListening = enabled;
+      if (enabled) {
+        statusEl.textContent = "Слушаю...";
+        statusEl.style.color = "#00ffcc";
+      } else {
+        statusEl.textContent = "Ожидание...";
+        statusEl.style.color = "#555";
+      }
+    };
+
+    // 2. ФУНКЦИЯ ДЛЯ PYTHON: Воспроизведение и визуализация ответа
+    window.playAIResponse = function (base64Audio) {
+      statusEl.textContent = "Говорю...";
+      statusEl.style.color = "#ff00ff";
+
+      // Декодируем Base64 в Blob
+      const byteCharacters = atob(base64Audio);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+
+      // Инициализируем AudioContext (если еще нет)
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+      }
+
+      // Если уже есть источник, отключаем старый
+      if (source) {
+        try { source.disconnect(); } catch (e) {}
+      }
+
+      audioElement.src = url;
+      source = audioCtx.createMediaElementSource(audioElement);
+
+      // ВАЖНО: Мы НЕ подключаем analyser к audioCtx.destination!
+      // Так как звук играет Python через aplay. Мы только анализируем данные.
+      source.connect(analyser);
+
+      audioElement.play();
+      isPlaying = true;
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      // Когда аудио закончится, возвращаем статус
+      audioElement.onended = () => {
+        isPlaying = false;
+        statusEl.textContent = "Ожидание...";
+        statusEl.style.color = "#555";
+      };
+    };
+
+    // Клик по экрану меняет цвет
+    canvas.addEventListener('click', () => {
+      currentHue = (currentHue + 60) % 360;
+    });
+
+    // Анимация
+    function draw() {
+      requestAnimationFrame(draw);
+      time += 0.05;
+
+      ctx.fillStyle = '#050505';
+      ctx.fillRect(0, 0, width, height);
+
+      let amp = 0;
+      if (isPlaying && analyser) {
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < 10; i++) sum += dataArray[i];
+        amp = sum / 10 / 255;
+      } else if (isListening) {
+        // Спокойное дыхание, пока слушаем
+        amp = 0.2 + Math.sin(time * 5) * 0.1;
+      } else {
+        // Спящий режим
+        amp = 0.1 + Math.sin(time * 1.5) * 0.05;
+      }
+
+      // 1. Рисуем центральный круг
+      const baseRadius = radius * (1 + amp * 0.2);
+
+      ctx.beginPath();
+      ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = `hsla(${currentHue}, 100%, 60%, 0.9)`;
+      ctx.lineWidth = 4 + amp * 15;
+      ctx.shadowBlur = 20 + amp * 50;
+      ctx.shadowColor = `hsla(${currentHue}, 100%, 50%, 0.8)`;
+      ctx.stroke();
+
+      // 2. Рисуем эквалайзер (полоски по кругу)
+      ctx.shadowBlur = 10;
+      if (isPlaying && analyser) {
+        const bars = 64;
+        const step = (Math.PI * 2) / bars;
+
+        for (let i = 0; i < bars; i++) {
+          const angle = i * step - Math.PI / 2;
+          const value = dataArray[i + 2] / 255;
+
+          if (value > 0.1) {
+            const barLength = radius * 0.5 * value;
+            const startX = cx + Math.cos(angle) * (baseRadius + 10);
+            const startY = cy + Math.sin(angle) * (baseRadius + 10);
+            const endX = cx + Math.cos(angle) * (baseRadius + 10 + barLength);
+            const endY = cy + Math.sin(angle) * (baseRadius + 10 + barLength);
+
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(endX, endY);
+            // Цвет сдвигается в зависимости от громкости
+            ctx.strokeStyle = `hsla(${currentHue + value * 40}, 100%, 60%, 0.7)`;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+          }
+        }
+      }
+
+      ctx.shadowBlur = 0;
+    }
+
+    draw();
+  </script>
+</body>
+</html>
