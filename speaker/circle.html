@@ -15,17 +15,18 @@
       overflow: hidden;
       background: #050505;
       transition: background-color 0.5s ease-in-out;
+      cursor: default;
     }
 
     #bg-layer {
       position: fixed;
       inset: 0;
       z-index: -2;
-      background-image: url('media/ISORIA_BG.jpg');
+      background-image: url('media/moscow.jpg');
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
-      background-color: rgba(0, 0, 0, 0.0);
+      background-color: rgba(0, 0, 0, 0.5);
       background-blend-mode: overlay;
       opacity: 1;
       transition: opacity 0.5s ease-in-out;
@@ -43,14 +44,76 @@
     canvas {
       display: block;
       width: 100vw;
-      height: 80vh;
+      height: 100vh;
       position: relative;
       z-index: 10;
+      transition: transform 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    body.ncs-mode canvas {
+      transform: translateX(20vw) scale(0.85);
+    }
+
+    #ncs-text {
+      position: fixed;
+      top: 50%;
+      left: 8vw;
+      transform: translateY(-50%) translateX(-50px);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 5;
+      transition: all 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    body.ncs-mode #ncs-text {
+      opacity: 1;
+      transform: translateY(-50%) translateX(0);
+    }
+
+    .ncs-logo-img {
+      width: 500px;
+      height: auto;
+      filter: drop-shadow(0 0 35px rgba(255, 255, 255, 0.3));
+      transition: filter 0.5s ease-in-out;
+    }
+
+    body.inverted-mode .ncs-logo-img {
+      filter: drop-shadow(0 0 35px rgba(0, 0, 0, 0.4));
+    }
+
+    body.inverted-mode #status {
+      color: #333;
+    }
+
+    body.inverted-mode .controls button,
+    body.inverted-mode .file-button {
+      background: rgba(255, 255, 255, 0.85);
+      color: #000;
+      border-color: rgba(0, 0, 0, 0.1);
+    }
+
+    body.inverted-mode .controls button:hover,
+    body.inverted-mode .file-button:hover {
+      background: rgba(230, 230, 230, 0.95);
+      border-color: rgba(0, 0, 0, 0.3);
+    }
+
+    .controls, #status {
+      transition: opacity 0.8s ease-in-out, color 0.5s ease-in-out;
+    }
+
+    body.cinema-mode .controls,
+    body.cinema-mode #status {
+      opacity: 0;
+      pointer-events: none;
     }
 
     .controls {
       position: fixed;
-      bottom: 24px;
+      bottom: 30px;
       left: 50%;
       transform: translateX(-50%);
       display: flex;
@@ -59,7 +122,8 @@
       justify-content: center;
       gap: 12px;
       width: min(90vw, 580px);
-      z-index: 10;
+      z-index: 20;
+      transition: transform 1.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     button, .file-button, input {
@@ -86,13 +150,14 @@
     input[type="file"] { display: none; }
 
     #status {
+      position: fixed;
+      bottom: 12px;
       width: 100%;
       text-align: center;
-      color: #555;
-      font-size: 12px;
+      color: #aaa;
+      font-size: 13px;
       letter-spacing: 0.5px;
-      margin-top: 8px;
-      transition: color 0.5s ease-in-out;
+      z-index: 20;
     }
   </style>
 </head>
@@ -100,6 +165,11 @@
 
   <div id="bg-layer"></div>
   <div id="particles-js"></div>
+
+  <div id="ncs-text">
+    <img id="logo-img" src="media/NCS-LOGO.png" alt="NCS Logo" class="ncs-logo-img">
+  </div>
+
   <canvas id="c"></canvas>
 
   <div class="controls">
@@ -108,10 +178,11 @@
       <input id="fileInput" type="file" accept="audio/*">
     </label>
     <button id="playPauseBtn">Пауза / продолжить</button>
+    <button id="layoutBtn">Режим NCS</button>
     <button id="rainbowBtn">Радуга</button>
     <button id="particlesBtn">Инверсия: Выкл</button>
-    <span id="status">Demo режим (синтетический бас)</span>
   </div>
+  <div id="status">Demo режим (синтетический бас)</div>
 
   <script src="https://cdn.jsdelivr.net/particles.js/2.0.0/particles.min.js"></script>
 
@@ -124,16 +195,38 @@
     const statusEl = document.getElementById('status');
     const particlesBtn = document.getElementById('particlesBtn');
     const particlesContainer = document.getElementById('particles-js');
+    const layoutBtn = document.getElementById('layoutBtn');
+    const logoImg = document.getElementById('logo-img');
 
     let particlesOn = false;
     let previousColor = null;
 
+    let uiTimeout;
+    function showUI() {
+      document.body.classList.remove('cinema-mode');
+      clearTimeout(uiTimeout);
+      uiTimeout = setTimeout(() => {
+        document.body.classList.add('cinema-mode');
+      }, 3000);
+    }
+    window.addEventListener('mousemove', showUI);
+    window.addEventListener('mousedown', showUI);
+    window.addEventListener('keydown', showUI);
+    showUI();
+
+    function cleanTrackName(filename) {
+      let name = filename.replace(/\.[^/.]+$/, "");
+      name = name.replace(/\(.*?\)/g, "");
+      name = name.replace(/\[.*?\]/g, "");
+      name = name.replace(/_/g, " ");
+      name = name.replace(/\s+/g, " ").trim();
+      return name;
+    }
+
     particlesJS("particles-js", {
       particles: {
         number: { value: 150, density: { enable: true, value_area: 800 } },
-        color: {
-          value: ["#ffffff", "#cccccc", "#999999"]
-        },
+        color: { value: ["#ffffff", "#cccccc", "#999999"] },
         shape: {
           type: "image",
           image: {
@@ -143,47 +236,23 @@
           }
         },
         opacity: {
-          value: 0.8,
-          random: true,
-          anim: {
-            enable: true,
-            speed: 0.8,
-            opacity_min: 0.1,
-            sync: false
-          }
+          value: 0.8, random: true,
+          anim: { enable: true, speed: 0.8, opacity_min: 0.1, sync: false }
         },
-        size: {
-          value: 3,
-          random: true
-        },
+        size: { value: 3, random: true },
         line_linked: { enable: false },
         move: {
-          enable: true,
-          speed: 2.5,
-          direction: "top",
-          random: true,
-          straight: false,
-          out_mode: "out",
-          bounce: false,
-          attract: { enable: false }
+          enable: true, speed: 2.5, direction: "top", random: true,
+          straight: false, out_mode: "out", bounce: false, attract: { enable: false }
         },
         rotate: {
-          value: 0,
-          random: true,
-          direction: "random",
-          animation: {
-            enable: true,
-            speed: 10,
-            sync: false
-          }
+          value: 0, random: true, direction: "random",
+          animation: { enable: true, speed: 10, sync: false }
         }
       },
       interactivity: {
         detect_on: "canvas",
-        events: {
-          onhover: { enable: false },
-          onclick: { enable: false }
-        }
+        events: { onhover: { enable: false }, onclick: { enable: false } }
       },
       retina_detect: true
     });
@@ -199,6 +268,15 @@
 
     viz.start();
 
+    layoutBtn.addEventListener('click', () => {
+      document.body.classList.toggle('ncs-mode');
+      if (document.body.classList.contains('ncs-mode')) {
+        layoutBtn.textContent = "Обычный режим";
+      } else {
+        layoutBtn.textContent = "Режим NCS";
+      }
+    });
+
     particlesBtn.addEventListener('click', () => {
       particlesOn = !particlesOn;
 
@@ -207,7 +285,9 @@
 
         document.body.style.backgroundColor = '#e8e8e8';
         document.getElementById('bg-layer').style.opacity = '0';
-        statusEl.style.color = '#aaa';
+        document.body.classList.add('inverted-mode');
+
+        logoImg.src = 'media/NCS-LOGO-BLACK.png';
 
         particlesContainer.style.opacity = '1';
         particlesContainer.style.filter = 'invert(1)';
@@ -221,7 +301,9 @@
       } else {
         document.body.style.backgroundColor = '#050505';
         document.getElementById('bg-layer').style.opacity = '1';
-        statusEl.style.color = '#555';
+        document.body.classList.remove('inverted-mode');
+
+        logoImg.src = 'media/NCS-LOGO.png';
 
         particlesContainer.style.opacity = '0';
         particlesContainer.style.filter = 'none';
@@ -249,6 +331,8 @@
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], {type: 'audio/wav'});
       const url = URL.createObjectURL(blob);
+
+      statusEl.textContent = "▶ J.A.R.V.I.S. отвечает...";
       viz.playFromUrl(url);
     };
 
@@ -259,7 +343,10 @@
       try {
         viz.loadAudio(file);
         viz.play();
-        statusEl.textContent = "▶ " + file.name.replace(/\.[^/.]+$/, "");
+
+        const cleanName = cleanTrackName(file.name);
+        statusEl.textContent = "▶ " + cleanName;
+
         playPauseBtn.textContent = "Пауза";
       } catch (error) {
         console.error(error);
